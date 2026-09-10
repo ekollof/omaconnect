@@ -68,6 +68,7 @@ Panel {
     function hide() { root.close() }
     function toggle() { root.toggle() }
     function refresh() { kcd.refresh(); return "ok" }
+    function version() { return "omaconnect-picker-1" }
   }
 
   BarIconButton {
