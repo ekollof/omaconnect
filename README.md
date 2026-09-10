@@ -59,6 +59,14 @@ omarchy plugin enable ekollof.omaconnect
 - **Share**: send a file to the primary device; incoming files/links/text
   raise toasts pointing at the download dir.
 - **Quick actions**: ping, find-my-phone (ring), call mute hint on incoming calls.
+- **Phone files (SFTP)**: list volumes, mount into the file manager,
+  unmount. Needs `sshfs` (optdepend of `kcd-bin`).
+- **SMS**: compose by number, incoming messages appear in the panel and as
+  toasts. I won't send a test SMS for you — that one's yours to try.
+- **Phone media (MPRIS)**: now-playing title/artist with play/pause toggle,
+  previous/next. Shows "No media playing" when the phone is quiet.
+- **Clipboard push**: per-device "Clip" button sends the desktop clipboard
+  to the phone (daemon handles sync; needs `wl-clipboard`).
 
 ## IPC
 
