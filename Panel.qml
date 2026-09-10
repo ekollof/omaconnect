@@ -459,3 +459,5 @@ Panel {
     }
   }
 }
+
+// reload-trigger: in-panel browser active
