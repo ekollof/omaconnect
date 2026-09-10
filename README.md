@@ -1,5 +1,7 @@
 # OMAConnect — KDE Connect for the Omarchy bar
 
+![OMAConnect panel](screenshot.png)
+
 `ekollof.omaconnect` puts your phone in the Omarchy bar: pairing, battery,
 notification replies, file sharing, ping, and find-my-phone. The KDE Connect
 protocol (TLS, discovery, pairing, crypto) is handled by the
