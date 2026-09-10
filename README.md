@@ -98,6 +98,33 @@ sudo ufw reload
 
 (`kcd-bin` ships the profile; it just isn't enabled automatically.)
 
+## Notification icons (kcd + quickshell quirks)
+
+Two gaps, both worked around outside Omarchy core:
+
+1. kcd needs `show_icons = true` under `[notification_plugin]` in
+   `~/.config/kcd/kcd.toml` (default off), then
+   `systemctl --user restart kcd`.
+2. quickshell 0.3.1 drops bare icon paths from the image role and renders
+   a magenta tile for themed names missing from the icon theme. A
+   kcd-scoped `notify-send` shim fixes both — bare paths become `file://`
+   URLs, unknown names fall back to an existing icon:
+
+   ```bash
+   mkdir -p ~/.config/kcd/bin ~/.config/systemd/user/kcd.service.d
+   # copy extras/kcd-notify-shim/notify-send to ~/.config/kcd/bin/ and
+   # extras/kcd-notify-shim/notify-shim.conf to
+   # ~/.config/systemd/user/kcd.service.d/, then:
+   systemctl --user daemon-reload && systemctl --user restart kcd
+   ```
+
+   Fallback names in the shim must exist in your icon theme — verify with
+   a `Quickshell.iconPath(name, true)` probe returning non-empty.
+
+Note: some Android apps (e.g. Conversations) send no icon payload at all;
+those show the generic fallback. Nothing on the desktop can conjure an
+icon the phone never sent.
+
 ## Known quirks
 
 - **IPC answers lag one reload behind**: after `omarchy plugin update`,

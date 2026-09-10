@@ -1,0 +1,48 @@
+#!/bin/bash
+# kcd-only notify-send shim (see README: notification icons).
+#
+# Two normalizations quickshell 0.3.1 needs, scoped to kcd via the
+# service PATH override (~/.config/systemd/user/kcd.service.d/*.conf):
+#  1. bare icon paths  -> file:// URLs (quickshell drops bare paths from
+#     the image role entirely);
+#  2. themed names missing from the icon theme -> a fallback that exists
+#     ("phone"), because quickshell maps unknown names to image://icon/
+#     URLs whose provider renders a magenta missing-icon tile.
+#
+# Fallback chain below must only contain names verified with:
+#   quickshell -p probe.qml  # Quickshell.iconPath(name, true) non-empty
+FALLBACKS=("phone" "dialog-information")
+
+theme_has() {
+  local name="$1"
+  find /usr/share/icons "$HOME/.local/share/icons" /usr/share/pixmaps -maxdepth 5 -name "$name.*" 2>/dev/null | grep -q .
+}
+
+resolve_icon() {
+  local v="$1"
+  # Already usable as-is.
+  if [[ "$v" == file://* || "$v" == image://* ]]; then printf "%s" "$v"; return; fi
+  # Bare path -> file:// URL.
+  if [[ "$v" = /* ]]; then printf "file://%s" "$v"; return; fi
+  # Empty -> nothing.
+  if [[ -z "$v" ]]; then printf ""; return; fi
+  # Themed name: keep if present, else first existing fallback.
+  if theme_has "$v"; then printf "%s" "$v"; return; fi
+  local f
+  for f in "${FALLBACKS[@]}"; do
+    if theme_has "$f"; then printf "%s" "$f"; return; fi
+  done
+  printf "%s" "$v"
+}
+
+args=()
+while (( $# > 0 )); do
+  case "$1" in
+    -i|--icon)
+      args+=("$1" "$(resolve_icon "${2:-}")"); shift 2;;
+    --icon=*)
+      args+=("--icon=$(resolve_icon "${1#--icon=}")"); shift;;
+    *) args+=("$1"); shift;;
+  esac
+done
+exec /usr/bin/notify-send "${args[@]}"
