@@ -1,0 +1,5 @@
+# Local-only agent/notes files — kept out of the published plugin repo
+# per the Omarchy marketplace guidelines (clean git root: manifest, code,
+# README, LICENSE).
+AGENTS.md
+TODO.md
