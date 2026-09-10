@@ -113,6 +113,40 @@ function num(payload, key, fallback) {
   return isFinite(v) ? v : (fallback || 0)
 }
 
+// --- mpris (`kcd mpris status --json`) ---
+// Array of player states; first entry carrying a title wins, else null.
+function parseMprisStatus(raw) {
+  var text = String(raw || "").trim()
+  if (text === "") return null
+  var parsed = null
+  try {
+    parsed = JSON.parse(text)
+  } catch (e) {
+    return null
+  }
+  if (!parsed || typeof parsed.length !== "number") return null
+  for (var i = 0; i < parsed.length; i++) {
+    var p = parsed[i] || {}
+    var title = String(p.title || "")
+    if (title === "") continue
+    return {
+      player: String(p.player || ""),
+      title: title,
+      artist: String(p.artist || ""),
+      album: String(p.album || ""),
+      isPlaying: p.isPlaying === true
+    }
+  }
+  return null
+}
+
+function nowPlayingLabel(nowPlaying) {
+  if (!nowPlaying) return "No media playing"
+  var t = String(nowPlaying.title || "Unknown title")
+  var a = String(nowPlaying.artist || "")
+  return a !== "" ? t + " — " + a : t
+}
+
 // --- battery pill ---
 function batteryIcon(charge, charging) {
   if (charging === true) return "󰂄"

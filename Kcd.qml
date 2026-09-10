@@ -27,6 +27,10 @@ Item {
   property var batteries: ({})
   // Replyable phone notifications, newest first (capped): {deviceId, replyId, appName, title, text, timestamp}.
   property var replyable: []
+  // Recent incoming SMS, newest first (capped): {deviceId, sender, body, date, threadId}.
+  property var smsList: []
+  // Phone now-playing state: {player, title, artist, album, isPlaying} or null.
+  property var nowPlaying: null
   // Pending outbound pair requests we initiated (deviceId -> true) so the
   // panel can show "Pair requested…" instead of flipping back to Unpaired.
   property var pendingPairs: ({})
@@ -43,6 +47,7 @@ Item {
     return Math.min(3600, Math.max(5, n))
   }
   readonly property int replyableLimit: 5
+  readonly property int smsLimit: 5
 
   // ---------- in-panel file browser (outbound share) ----------
   // Native Qt dialogs are out: instantiating the GTK platform file chooser
@@ -128,6 +133,12 @@ Item {
   function refreshDevices() {
     if (daemonState !== "up" || devicesProc.running) return
     devicesProc.running = true
+    refreshMpris()
+  }
+
+  function refreshMpris() {
+    if (daemonState !== "up" || mprisProc.running) return
+    mprisProc.running = true
   }
 
   // ---------- actions (all detached one-shots through actionProc) ----------
@@ -180,6 +191,44 @@ Item {
     runAction("share", id, ["share", String(id), p])
   }
 
+  function sftpVolumes(id) {
+    // `browse` (no volume) always fetches fresh credentials, unlike the
+    // cache-dependent `volumes` subcommand.
+    runAction("sftp-volumes", id, ["sftp", "browse", String(id)])
+  }
+
+  function sftpMount(id) {
+    runAction("sftp-mount", id, ["sftp", "mount", String(id)])
+  }
+
+  function sftpUnmount(id) {
+    runAction("sftp-unmount", id, ["sftp", "unmount", String(id)])
+  }
+
+  function smsSend(id, number, message) {
+    var to = String(number || "").trim()
+    var msg = String(message || "").trim()
+    if (to === "" || msg === "") {
+      lastError = "Enter a number and a message"
+      return
+    }
+    runAction("sms-send", id, ["sms", "send", String(id), to, msg])
+  }
+
+  function smsRefresh(id) {
+    runAction("sms-refresh", id, ["sms", "conversations", String(id)])
+  }
+
+  function mprisAction(id, action) {
+    var args = ["mpris", action]
+    if (id) args.push("--device", String(id))
+    runAction("mpris-" + action, id || "", args)
+  }
+
+  function pushClipboard(id) {
+    runAction("clipboard", id, id ? ["clipboard", String(id)] : ["clipboard"])
+  }
+
   function replyTo(deviceId, replyId, message) {
     var msg = String(message || "").trim()
     if (msg === "") {
@@ -215,6 +264,8 @@ Item {
       primary: primaryDevice ? String(primaryDevice.id) : null,
       browseDir: browseDir, browseCount: (browseEntries || []).length,
       browseBusy: browseBusy, replyable: (replyable || []).length,
+      sms: (smsList || []).length,
+      nowPlaying: nowPlaying ? (String(nowPlaying.title || "") + " — " + String(nowPlaying.artist || "")) : null,
       sharePath: String(sharePath || ""),
       action: actionStatus, error: lastError, doctor: doctorSummary
     })
@@ -305,6 +356,30 @@ Item {
       notify("Missed call", missed)
       break
     }
+    case "sftp.mount": {
+      var mountErr = Model.str(payload, "errorMessage", "")
+      if (mountErr !== "") notify("SFTP error", mountErr)
+      break
+    }
+    case "sms.incoming": {
+      var sms = {
+        deviceId: String(event.deviceId),
+        sender: Model.str(payload, "sender", "Unknown"),
+        body: Model.str(payload, "body", ""),
+        date: Model.str(payload, "date", ""),
+        threadId: Model.str(payload, "thread_id", "")
+      }
+      var threads = ([sms]).concat(smsList || [])
+      smsList = threads.slice(0, smsLimit)
+      notify("SMS from " + sms.sender, sms.body.slice(0, 120))
+      break
+    }
+    case "sms.attachment":
+      notify("MMS attachment", Model.str(payload, "filename", "saved"))
+      break
+    case "mpris.update":
+      refreshMpris()
+      break
     default:
       break
     }
@@ -399,6 +474,21 @@ Item {
     }
   }
 
+  // `mpris status --json` → array; first entry with a title wins. Empty
+  // array (or all entries title-less) means nothing playable right now —
+  // distinct from "unknown" so the panel can show "No media playing".
+  Process {
+    id: mprisProc
+    command: ["kcd", "mpris", "status", "--json"]
+    running: false
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.nowPlaying = Model.parseMprisStatus(text)
+      }
+    }
+  }
+
   Process {
     id: watchProc
     // Filtered to the events the panel actually consumes; kcd reconnects by
@@ -407,7 +497,8 @@ Item {
       "device.added,device.connected,device.disconnected,device.removed," +
       "pair.requested,pair.accepted,pair.rejected," +
       "battery.update,notification,notification.canceled," +
-      "share.complete,share.url,share.text,telephony.ringing,telephony.missed"]
+      "share.complete,share.url,share.text,telephony.ringing,telephony.missed," +
+      "sftp.mount,sms.incoming,sms.attachment,mpris.update"]
     running: false
     stdout: SplitParser {
       onRead: function(data) { root.handleWatchLine(data) }
@@ -440,12 +531,23 @@ Item {
       root._pendingDeviceId = ""
       if (code === 0) {
         root.lastError = ""
+        var out = String(root._actionOutput || "").trim()
         if (tag === "pair") root.actionStatus = "Pair request sent — accept on " + root.deviceName(devId)
         else if (tag === "unpair") root.actionStatus = "Unpaired " + root.deviceName(devId)
         else if (tag === "ping") root.actionStatus = "Ping sent"
         else if (tag === "findmyphone") root.actionStatus = "Phone is ringing"
         else if (tag === "mute") root.actionStatus = "Call muted"
         else if (tag === "share") root.actionStatus = "File sent"
+        else if (tag === "sftp-volumes") root.actionStatus = out !== "" ? out.slice(0, 500) : "No volumes reported"
+        else if (tag === "sftp-mount") {
+          root.actionStatus = out !== "" ? out.slice(0, 300) : "Mounted"
+          root.notify("Phone files", root.actionStatus)
+        }
+        else if (tag === "sftp-unmount") root.actionStatus = "Unmounted"
+        else if (tag === "sms-send") root.actionStatus = "SMS sent"
+        else if (tag === "sms-refresh") root.actionStatus = "Conversations requested — incoming messages appear below"
+        else if (tag.indexOf("mpris-") === 0) root.refreshMpris()
+        else if (tag === "clipboard") root.actionStatus = "Clipboard pushed to phone"
         else if (tag === "reply") {
           root.actionStatus = "Reply sent"
           // The reply went out; drop matching entries so the list only holds

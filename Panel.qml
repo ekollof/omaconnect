@@ -48,6 +48,8 @@ Panel {
   }
 
   property string sharePath: ""
+  property string smsNumber: ""
+  property string smsMessage: ""
   property var replyDrafts: ({})
 
   function setReplyDraft(replyId, text) {
@@ -258,6 +260,13 @@ Panel {
                   fontFamily: root.bar.fontFamily
                   onClicked: kcd.findPhone(dev.id)
                 }
+                Button {
+                  visible: paired && dev.connected
+                  text: "Clip"
+                  foreground: root.bar.foreground
+                  fontFamily: root.bar.fontFamily
+                  onClicked: kcd.pushClipboard(dev.id)
+                }
               }
             }
           }
@@ -419,6 +428,222 @@ Panel {
             font.pixelSize: Style.font.caption
             textFormat: Text.PlainText
             text: "To " + (kcd.primaryDevice ? kcd.primaryDevice.name : "")
+          }
+        }
+
+        // ---------- phone files (SFTP) ----------
+        Column {
+          width: parent.width
+          spacing: Style.space(8)
+          visible: kcd.daemonState === "up" && kcd.primaryDevice !== null
+
+          PanelSeparator { foreground: root.bar.foreground }
+
+          PanelSectionHeader {
+            text: "PHONE FILES"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+          }
+
+          Text {
+            visible: kcd.doctorSummary.indexOf("sshfs") >= 0
+            width: parent.width
+            wrapMode: Text.WordWrap
+            color: Qt.darker(root.bar.foreground, 1.5)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            textFormat: Text.PlainText
+            text: "Install sshfs for phone file browsing."
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+            visible: kcd.doctorSummary.indexOf("sshfs") < 0
+
+            Button {
+              text: "Volumes"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              onClicked: {
+                if (kcd.primaryDevice) kcd.sftpVolumes(kcd.primaryDevice.id)
+              }
+            }
+            Button {
+              text: "Mount"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              onClicked: {
+                if (kcd.primaryDevice) kcd.sftpMount(kcd.primaryDevice.id)
+              }
+            }
+            Button {
+              text: "Unmount"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              onClicked: {
+                if (kcd.primaryDevice) kcd.sftpUnmount(kcd.primaryDevice.id)
+              }
+            }
+          }
+          Text {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            color: Qt.darker(root.bar.foreground, 1.5)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            textFormat: Text.PlainText
+            text: "Mount opens the phone storage in your file manager."
+          }
+        }
+
+        // ---------- SMS ----------
+        Column {
+          width: parent.width
+          spacing: Style.space(8)
+          visible: kcd.daemonState === "up" && kcd.primaryDevice !== null
+
+          PanelSeparator { foreground: root.bar.foreground }
+
+          PanelSectionHeader {
+            text: "SMS"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+          }
+
+          TextField {
+            width: parent.width
+            foreground: root.bar.foreground
+            font.family: root.bar.fontFamily
+            placeholderText: "Phone number"
+            text: root.smsNumber
+            onTextChanged: root.smsNumber = text
+          }
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+            TextField {
+              width: parent.width - 84
+              foreground: root.bar.foreground
+              font.family: root.bar.fontFamily
+              placeholderText: "Message…"
+              text: root.smsMessage
+              onTextChanged: root.smsMessage = text
+              onAccepted: {
+                if (kcd.primaryDevice) kcd.smsSend(kcd.primaryDevice.id, root.smsNumber, root.smsMessage)
+              }
+            }
+            Button {
+              text: "Send"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              onClicked: {
+                if (kcd.primaryDevice) kcd.smsSend(kcd.primaryDevice.id, root.smsNumber, root.smsMessage)
+              }
+            }
+          }
+
+          Repeater {
+            model: kcd.smsList || []
+            delegate: Column {
+              required property var modelData
+              width: parent.width
+              spacing: Style.space(1)
+              Text {
+                width: parent.width
+                elide: Text.ElideRight
+                color: root.bar.foreground
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                textFormat: Text.PlainText
+                text: (modelData.sender || "Unknown") + (modelData.date !== "" ? " · " + modelData.date : "")
+              }
+              Text {
+                width: parent.width
+                wrapMode: Text.WordWrap
+                maximumLineCount: 2
+                elide: Text.ElideRight
+                color: Qt.darker(root.bar.foreground, 1.4)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                textFormat: Text.PlainText
+                text: modelData.body || ""
+              }
+            }
+          }
+
+          Button {
+            text: "Load conversations"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            onClicked: {
+              if (kcd.primaryDevice) kcd.smsRefresh(kcd.primaryDevice.id)
+            }
+          }
+        }
+
+        // ---------- phone media (MPRIS) ----------
+        Column {
+          width: parent.width
+          spacing: Style.space(8)
+          visible: kcd.daemonState === "up" && kcd.primaryDevice !== null
+
+          PanelSeparator { foreground: root.bar.foreground }
+
+          PanelSectionHeader {
+            text: "PHONE MEDIA"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+          }
+
+          Text {
+            width: parent.width
+            elide: Text.ElideRight
+            color: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            textFormat: Text.PlainText
+            text: Model.nowPlayingLabel(kcd.nowPlaying)
+          }
+          Text {
+            visible: kcd.nowPlaying !== null && kcd.nowPlaying.player !== ""
+            width: parent.width
+            elide: Text.ElideRight
+            color: Qt.darker(root.bar.foreground, 1.5)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            textFormat: Text.PlainText
+            text: kcd.nowPlaying.player + (kcd.nowPlaying.isPlaying ? " · playing" : " · paused")
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Button {
+              text: "Prev"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              onClicked: {
+                if (kcd.primaryDevice) kcd.mprisAction(kcd.primaryDevice.id, "previous")
+              }
+            }
+            Button {
+              text: kcd.nowPlaying !== null && kcd.nowPlaying.isPlaying ? "Pause" : "Play"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              onClicked: {
+                if (kcd.primaryDevice) kcd.mprisAction(kcd.primaryDevice.id, "toggle")
+              }
+            }
+            Button {
+              text: "Next"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              onClicked: {
+                if (kcd.primaryDevice) kcd.mprisAction(kcd.primaryDevice.id, "next")
+              }
+            }
           }
         }
 
