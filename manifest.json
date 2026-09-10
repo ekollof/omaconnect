@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "ekollof.omaconnect",
+  "name": "OMAConnect",
+  "version": "0.1.0",
+  "author": "ekollof",
+  "license": "MIT",
+  "description": "KDE Connect devices in the Omarchy bar via the kcd daemon: pairing, battery, notification replies, file sharing, and quick actions.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "OMAConnect",
+    "description": "Pair phones, see battery, reply to notifications, share files, ping and find your phone.",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 30
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Device refresh interval (seconds)",
+        "min": 5,
+        "max": 3600,
+        "step": 5,
+        "defaultValue": 30
+      }
+    ]
+  }
+}
