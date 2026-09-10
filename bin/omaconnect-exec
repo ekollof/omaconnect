@@ -14,8 +14,15 @@
 # Exit codes: the producer's code on success; 3 on any limit breach; 2 on
 # misuse. Byte counting runs under LC_ALL=C so multibyte input is measured
 # in bytes, and bytes are forwarded verbatim (split points never alter data).
+# Rendezvous objects live in an atomic mode-0700 private directory (verified,
+# removed on exit); producers run in their own process group (`set -m`) so
+# exit/overflow paths reap descendants too — nothing can retain a writer.
 export LC_ALL=C
 set -u
+# Job control so every background producer runs in its OWN process group
+# (pgid == its pid). Overflow/exit paths kill the whole group, so forked
+# descendants can neither retain pipe writers nor survive the wrapper.
+set -m
 
 usage() {
   echo "usage: omaconnect-exec {run <max-bytes> | watch <max-line-bytes>} -- cmd..." >&2
@@ -31,8 +38,16 @@ cap=$2
 shift 3
 (( $# > 0 )) || usage
 
+# Kill a producer process GROUP (never a bare pid: descendants must go too).
+kill_group() {
+  kill -KILL -- "-$1" 2>/dev/null
+}
+
 if [[ $mode == "run" ]]; then
   tmpdir=$(mktemp -d) || exit 2
+  # GNU mktemp has no -m flag, but creates directories 0700 by default; the
+  # stat check enforces it and fails closed otherwise.
+  [[ $(stat -c '%a %u' "$tmpdir") == "700 $EUID" ]] || { rm -rf "$tmpdir"; exit 2; }
   trap 'rm -rf "$tmpdir"' EXIT
   # head -c bounds both streams on disk; further producer writes hit a closed
   # pipe (SIGPIPE) which terminates it. wait still reports its real code.
@@ -42,6 +57,10 @@ if [[ $mode == "run" ]]; then
   prod=$!
   wait "$prod"
   rc=$?
+  # Group-kill AFTER reaping the producer: forked descendants holding the
+  # pipes open would otherwise keep the heads (and our bare wait below)
+  # alive indefinitely. Heads live in our own group and are unaffected.
+  kill_group "$prod"
   # Bare wait reaps the head processes so the files below are final — size
   # polling alone can observe a quiescent-but-incomplete file.
   wait 2>/dev/null
@@ -57,17 +76,31 @@ if [[ $mode == "run" ]]; then
 fi
 
 # --- watch mode: byte-at-a-time record framing with a hard length cap ------
-fifo=$(mktemp -u)
-mkfifo "$fifo" || exit 2
+# Private rendezvous: the directory is created atomically with mode 0700, so
+# no other local process can pre-create, swap, or even enter it; the FIFO
+# inside inherits that isolation and is additionally created + verified with
+# an explicit restrictive mode. Identity (fifo + ownership) is re-checked
+# before use, and the whole directory is removed on exit.
+rundir=$(mktemp -d) || exit 2
+# GNU mktemp has no -m flag, but creates directories 0700 by default; the
+# stat check below enforces it and fails closed otherwise.
+[[ $(stat -c '%a %u' "$rundir") == "700 $EUID" ]] || { rm -rf "$rundir"; exit 2; }
+mkfifo -m 600 "$rundir/stream" || { rm -rf "$rundir"; exit 2; }
+fifo="$rundir/stream"
+[[ -p $fifo ]] || { rm -rf "$rundir"; exit 2; }
+[[ $(stat -c '%a %u' "$fifo") == "600 $EUID" ]] || { rm -rf "$rundir"; exit 2; }
 "$@" >"$fifo" 2>/dev/null &
 prod=$!
 cleanup() {
-  kill -KILL "$prod" 2>/dev/null
-  rm -f "$fifo"
+  kill_group "$prod"
+  rm -rf "$rundir"
 }
 trap cleanup EXIT
 exec 3<"$fifo"
-rm -f "$fifo" # unlinked; the open fd keeps it alive
+# The directory is NOT unlinked early: it stays (0700, ours) until the EXIT
+# trap removes it, so no other local process can swap the FIFO out from
+# under fd 3 — re-validating by path would only re-read the same object,
+# hence the mode/ownership checks above are the effective verification.
 
 drops=0
 line=""
