@@ -1,6 +1,6 @@
 import QtQuick
-import Quickshell
 import Quickshell.Io
+import QtQuick.Dialogs
 import qs.Ui
 import qs.Commons
 import "Model.js" as Model
@@ -76,6 +76,19 @@ Panel {
     bar: root.bar
     text: root.pillText
     onPressed: root.toggle()
+  }
+
+  // Native file picker for outbound sharing. file:// URL → local path with
+  // percent-decoding; Send stays a separate explicit click so choosing a
+  // large file never uploads it by accident.
+  FileDialog {
+    id: filePicker
+    title: "Share file with phone"
+    fileMode: FileDialog.OpenFile
+    onAccepted: {
+      var path = decodeURIComponent(String(filePicker.selectedFile || "").replace(/^file:\/\//, ""))
+      if (path !== "") root.sharePath = path
+    }
   }
 
   KeyboardPanel {
@@ -336,17 +349,11 @@ Panel {
           Row {
             width: parent.width
             spacing: Style.space(8)
-            TextField {
-              id: shareField
-              width: parent.width - 76
+            Button {
+              text: "Choose file…"
               foreground: root.bar.foreground
-              font.family: root.bar.fontFamily
-              placeholderText: "/path/to/file"
-              text: root.sharePath
-              onTextChanged: root.sharePath = text
-              onAccepted: {
-                if (kcd.primaryDevice) kcd.shareFile(kcd.primaryDevice.id, root.sharePath)
-              }
+              fontFamily: root.bar.fontFamily
+              onClicked: filePicker.open()
             }
             Button {
               text: "Send"
@@ -356,6 +363,16 @@ Panel {
                 if (kcd.primaryDevice) kcd.shareFile(kcd.primaryDevice.id, root.sharePath)
               }
             }
+          }
+          Text {
+            visible: root.sharePath !== ""
+            width: parent.width
+            elide: Text.ElideMiddle
+            color: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            textFormat: Text.PlainText
+            text: root.sharePath
           }
           Text {
             visible: kcd.primaryDevice !== null
