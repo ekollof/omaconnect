@@ -15,7 +15,7 @@ Panel {
   // Lazy-load the share browser on first open; navigation state persists
   // across closes within the shell lifetime.
   onOpenedChanged: {
-    if (opened && kcd.primaryDevice && (kcd.browseEntries || []).length === 0 && !kcd.browseBusy) {
+    if (opened && root.shareExpanded && kcd.primaryDevice && (kcd.browseEntries || []).length === 0 && !kcd.browseBusy) {
       kcd.browseHome()
     }
   }
@@ -48,6 +48,7 @@ Panel {
   }
 
   property string sharePath: ""
+  property bool shareExpanded: false
   property string smsNumber: ""
   property string smsMessage: ""
   property var replyDrafts: ({})
@@ -347,11 +348,39 @@ Panel {
 
           PanelSeparator { foreground: root.bar.foreground }
 
-          PanelSectionHeader {
-            text: "SHARE FILE"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
+          // Collapsible section header: chevron toggles the browser below.
+          // Collapsed by default to keep the panel compact; expanding a
+          // fresh browser also triggers its first directory load.
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Button {
+              iconText: root.shareExpanded ? "▾" : "▸"
+              tooltipText: root.shareExpanded ? "Collapse" : "Expand"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              onClicked: {
+                root.shareExpanded = !root.shareExpanded
+                if (root.shareExpanded && kcd.primaryDevice
+                    && (kcd.browseEntries || []).length === 0 && !kcd.browseBusy) {
+                  kcd.browseHome()
+                }
+              }
+            }
+            PanelSectionHeader {
+              width: parent.width - 40
+              anchors.verticalCenter: parent.verticalCenter
+              text: "SHARE FILE"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+            }
           }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(8)
+            visible: root.shareExpanded
 
           Row {
             width: parent.width
@@ -429,6 +458,7 @@ Panel {
             textFormat: Text.PlainText
             text: "To " + (kcd.primaryDevice ? kcd.primaryDevice.name : "")
           }
+          } // end collapsible share browser
         }
 
         // ---------- phone files (SFTP) ----------
