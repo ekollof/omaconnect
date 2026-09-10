@@ -615,7 +615,10 @@ Panel {
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption
             textFormat: Text.PlainText
-            text: kcd.nowPlaying.player + (kcd.nowPlaying.isPlaying ? " · playing" : " · paused")
+            // Guarded twice: `visible` doesn't stop the binding below from
+            // evaluating when nowPlaying is null.
+            text: (kcd.nowPlaying ? kcd.nowPlaying.player : "")
+              + ((kcd.nowPlaying && kcd.nowPlaying.isPlaying) ? " · playing" : " · paused")
           }
 
           Row {
