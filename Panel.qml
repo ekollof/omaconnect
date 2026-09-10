@@ -74,9 +74,9 @@ Panel {
     function show() { root.open() }
     function hide() { root.close() }
     function toggle() { root.toggle() }
-    function refresh() { kcd.refresh(); return "ok" }
-    function version() { return "omaconnect-picker-1" }
-    function debugState() {
+    function refresh(): string { kcd.refresh(); return "ok" }
+    function version(): string { return "omaconnect-picker-1" }
+    function debugState(): string {
       return kcd.debugSnapshot(String(root.sharePath || ""))
     }
   }
