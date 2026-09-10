@@ -100,15 +100,19 @@ sudo ufw reload
 
 ## Notification icons (kcd + quickshell quirks)
 
-Two gaps, both worked around outside Omarchy core:
+Two gaps, both worked around outside Omarchy core. **Everything here is
+optional**: without it, notifications arrive promptly with text and actions
+— just with generic/missing icons.
 
 1. kcd needs `show_icons = true` under `[notification_plugin]` in
    `~/.config/kcd/kcd.toml` (default off), then
    `systemctl --user restart kcd`.
 2. quickshell 0.3.1 drops bare icon paths from the image role and renders
-   a magenta tile for themed names missing from the icon theme. A
-   kcd-scoped `notify-send` shim fixes both — bare paths become `file://`
-   URLs, unknown names fall back to an existing icon:
+   a magenta tile for themed names missing from the icon theme. An
+   **opt-in, kcd-scoped** `notify-send` shim fixes both — bare paths become
+   `file://` URLs, unknown names fall back to an existing icon. It never
+   runs automatically and touches nothing outside kcd (PATH override applies
+   to the kcd service unit only):
 
    ```bash
    mkdir -p ~/.config/kcd/bin ~/.config/systemd/user/kcd.service.d
