@@ -88,6 +88,14 @@ sudo ufw reload
 
 (`kcd-bin` ships the profile; it just isn't enabled automatically.)
 
+## Known quirks
+
+- **IPC answers lag one reload behind**: after `omarchy plugin update`,
+  the panel UI refreshes immediately but `omarchy-shell ekollof.omaconnect …`
+  keeps hitting the pre-update handler instance (first-registered wins and
+  old instances linger). A shell restart promotes the new code. Symptom:
+  new IPC functions report "Function not found" until restart.
+
 ## Roadmap (v2)
 
 SFTP browse/mount opener, SMS compose, MPRIS phone-playback controls,
