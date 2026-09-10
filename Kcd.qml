@@ -197,6 +197,29 @@ Item {
     enableWait.restart()
   }
 
+  // One-line JSON snapshot of backend state for `debugState` IPC probing.
+  function debugSnapshot(sharePath) {
+    var devs = []
+    var list = devices || []
+    for (var i = 0; i < list.length; i++) {
+      devs.push({ id: String(list[i].id), name: list[i].name, state: list[i].state,
+        connected: list[i].connected === true })
+    }
+    var bats = {}
+    for (var id in batteries) {
+      bats[id] = { charge: batteries[id].charge, charging: batteries[id].charging === true }
+    }
+    return JSON.stringify({
+      daemon: daemonState, installed: kcdInstalled,
+      devices: devs, batteries: bats,
+      primary: primaryDevice ? String(primaryDevice.id) : null,
+      browseDir: browseDir, browseCount: (browseEntries || []).length,
+      browseBusy: browseBusy, replyable: (replyable || []).length,
+      sharePath: String(sharePath || ""),
+      action: actionStatus, error: lastError, doctor: doctorSummary
+    })
+  }
+
   function notify(title, body) {
     var t = String(title || "OMAConnect")
     var b = String(body || "")
