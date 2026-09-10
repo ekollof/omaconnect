@@ -44,6 +44,45 @@ Item {
   }
   readonly property int replyableLimit: 5
 
+  // ---------- in-panel file browser (outbound share) ----------
+  // Native Qt dialogs are out: instantiating the GTK platform file chooser
+  // inside the shell process crashes quickshell (gvfs abort in the crash
+  // log). Listing via `ls` and rendering rows in the panel instead.
+
+  property string browseDir: ""
+  property var browseEntries: [] // {name, isDir, path}
+  property bool browseBusy: false
+
+  function browseHome() {
+    browse(Quickshell.env("HOME") || "/home")
+  }
+
+  function browseUp() {
+    var dir = String(browseDir || "")
+    if (dir === "" || dir === "/") {
+      browse("/")
+      return
+    }
+    var trimmed = dir.charAt(dir.length - 1) === "/" ? dir.slice(0, -1) : dir
+    var slash = trimmed.lastIndexOf("/")
+    browse(slash <= 0 ? "/" : trimmed.slice(0, slash))
+  }
+
+  function joinPath(dir, name) {
+    var d = String(dir || "")
+    var n = String(name || "")
+    if (d === "" || d === "/") return "/" + n
+    return d.charAt(d.length - 1) === "/" ? d + n : d + "/" + n
+  }
+
+  function browse(path) {
+    var dir = String(path || "").trim()
+    if (dir === "" || browseProc.running) return
+    browseBusy = true
+    browseProc.command = ["ls", "-1A", "-p", "--group-directories-first", "--", dir]
+    browseProc.running = true
+  }
+
   // First connected+paired device, or first connected device — the pill and
   // most actions target this one.
   readonly property var primaryDevice: {
@@ -403,6 +442,40 @@ Item {
             if (k !== String(devId)) next[k] = true
           root.pendingPairs = next
         }
+      }
+    }
+  }
+
+  // `ls -p` marks directories with a trailing slash; that is the whole
+  // protocol. Newline-containing file names won't round-trip — accepted
+  // v1 limitation, shared with most shell listings.
+  Process {
+    id: browseProc
+    running: false
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var dir = String((browseProc.command || []).slice(-1)[0] || "")
+        var entries = []
+        var lines = String(text || "").split("\n")
+        for (var i = 0; i < lines.length; i++) {
+          var line = lines[i]
+          if (line === "") continue
+          var isDir = line.charAt(line.length - 1) === "/"
+          var name = isDir ? line.slice(0, -1) : line
+          if (name === "") continue
+          entries.push({ name: name, isDir: isDir, path: root.joinPath(dir, name) })
+        }
+        root.browseDir = dir
+        root.browseEntries = entries
+        root.browseBusy = false
+        root.lastError = ""
+      }
+    }
+    onExited: function(code) {
+      root.browseBusy = false
+      if (code !== 0) {
+        root.lastError = "Cannot list " + String((browseProc.command || []).slice(-1)[0] || "")
       }
     }
   }

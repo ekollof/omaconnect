@@ -1,6 +1,5 @@
 import QtQuick
 import Quickshell.Io
-import QtQuick.Dialogs
 import qs.Ui
 import qs.Commons
 import "Model.js" as Model
@@ -12,6 +11,14 @@ Panel {
   // Own the single IpcHandler this target permits, so refresh() is exposed
   // alongside the standard open/close/toggle lifecycle.
   manageIpc: false
+
+  // Lazy-load the share browser on first open; navigation state persists
+  // across closes within the shell lifetime.
+  onOpenedChanged: {
+    if (opened && kcd.primaryDevice && (kcd.browseEntries || []).length === 0 && !kcd.browseBusy) {
+      kcd.browseHome()
+    }
+  }
 
   Kcd {
     id: kcd
@@ -77,19 +84,6 @@ Panel {
     bar: root.bar
     text: root.pillText
     onPressed: root.toggle()
-  }
-
-  // Native file picker for outbound sharing. file:// URL → local path with
-  // percent-decoding; Send stays a separate explicit click so choosing a
-  // large file never uploads it by accident.
-  FileDialog {
-    id: filePicker
-    title: "Share file with phone"
-    fileMode: FileDialog.OpenFile
-    onAccepted: {
-      var path = decodeURIComponent(String(filePicker.selectedFile || "").replace(/^file:\/\//, ""))
-      if (path !== "") root.sharePath = path
-    }
   }
 
   KeyboardPanel {
@@ -333,7 +327,7 @@ Panel {
           }
         }
 
-        // ---------- share ----------
+        // ---------- share: in-panel file browser ----------
         Column {
           width: parent.width
           spacing: Style.space(8)
@@ -350,11 +344,22 @@ Panel {
           Row {
             width: parent.width
             spacing: Style.space(8)
+
             Button {
-              text: "Choose file…"
+              text: "Up"
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
-              onClicked: filePicker.open()
+              onClicked: kcd.browseUp()
+            }
+            Text {
+              width: parent.width - 120
+              anchors.verticalCenter: parent.verticalCenter
+              elide: Text.ElideMiddle
+              color: Qt.darker(root.bar.foreground, 1.4)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+              textFormat: Text.PlainText
+              text: kcd.browseBusy ? "Loading…" : String(kcd.browseDir || "")
             }
             Button {
               text: "Send"
@@ -365,6 +370,33 @@ Panel {
               }
             }
           }
+
+          ListView {
+            width: parent.width
+            height: Math.min(contentHeight, Style.space(240))
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            interactive: contentHeight > height
+            spacing: Style.space(4)
+            model: kcd.browseEntries || []
+
+            delegate: Button {
+              required property var modelData
+              width: ListView.view.width
+              leftAlign: true
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              iconText: modelData && modelData.isDir ? "" : ""
+              text: modelData ? modelData.name : ""
+              selected: modelData && !modelData.isDir && root.sharePath === modelData.path
+              onClicked: {
+                if (!modelData) return
+                if (modelData.isDir) kcd.browse(modelData.path)
+                else root.sharePath = modelData.path
+              }
+            }
+          }
+
           Text {
             visible: root.sharePath !== ""
             width: parent.width
@@ -373,7 +405,7 @@ Panel {
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.bodySmall
             textFormat: Text.PlainText
-            text: root.sharePath
+            text: "Selected: " + root.sharePath
           }
           Text {
             visible: kcd.primaryDevice !== null
