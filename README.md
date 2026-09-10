@@ -26,7 +26,7 @@ on the same network.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/<you>/omaconnect.git --enable
+omarchy plugin add https://github.com/ekollof/omaconnect.git --enable
 ```
 
 Then enable the widget in the bar (default section: right), or:
