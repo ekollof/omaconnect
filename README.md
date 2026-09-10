@@ -37,6 +37,22 @@ Then enable the widget in the bar (default section: right), or:
 omarchy plugin enable ekollof.omaconnect
 ```
 
+## Remove
+
+```bash
+omarchy plugin remove ekollof.omaconnect
+```
+
+This deletes the plugin only. Optionally clean up its companions (all
+opt-in, none required):
+
+```bash
+kcd sftp unmount <device-id>   # unmount phone storage first, if mounted
+systemctl --user disable --now kcd
+yay -R kcd-bin
+rm -rf ~/.config/kcd ~/.config/systemd/user/kcd.service.d
+```
+
 ## First run
 
 1. Click the 󰄜 pill. If the daemon is stopped, the panel offers a
