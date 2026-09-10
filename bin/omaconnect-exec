@@ -1,0 +1,144 @@
+#!/bin/bash
+# omaconnect-exec — bounded framing layer between kcd (phone-influenced data)
+# and QML. Quickshell accumulates process output and watch-stream lines with
+# no byte ceiling, so a compromised/malformed peer or backend could exhaust
+# the shared shell process before Model.js ever parses a byte.
+#
+#   omaconnect-exec run <max-total-bytes> -- cmd...    one-shot: stdout and
+#       stderr each capped; overflow kills the producer (SIGPIPE), prints
+#       nothing, exits 3.
+#   omaconnect-exec watch <max-line-bytes> -- cmd...   stream: records longer
+#       than the cap are dropped (stderr note); >100 consecutive drops kills
+#       the producer and exits 3.
+#
+# Exit codes: the producer's code on success; 3 on any limit breach; 2 on
+# misuse. Byte counting runs under LC_ALL=C so multibyte input is measured
+# in bytes, and bytes are forwarded verbatim (split points never alter data).
+export LC_ALL=C
+set -u
+
+usage() {
+  echo "usage: omaconnect-exec {run <max-bytes> | watch <max-line-bytes>} -- cmd..." >&2
+  exit 2
+}
+
+[[ $# -ge 4 ]] || usage
+mode=$1
+cap=$2
+[[ $mode == "run" || $mode == "watch" ]] || usage
+[[ $cap =~ ^[0-9]+$ ]] && (( cap > 0 )) || usage
+[[ $3 == "--" ]] || usage
+shift 3
+(( $# > 0 )) || usage
+
+if [[ $mode == "run" ]]; then
+  tmpdir=$(mktemp -d) || exit 2
+  trap 'rm -rf "$tmpdir"' EXIT
+  # head -c bounds both streams on disk; further producer writes hit a closed
+  # pipe (SIGPIPE) which terminates it. wait still reports its real code.
+  # timeout (not a hand-rolled sleep watchdog: those orphan their sleepers)
+  # bounds total runtime; -k escalates to KILL.
+  timeout -k 5 120 "$@" > >(head -c $((cap + 1)) >"$tmpdir/out") 2> >(head -c $((cap + 1)) >"$tmpdir/err") &
+  prod=$!
+  wait "$prod"
+  rc=$?
+  # Bare wait reaps the head processes so the files below are final — size
+  # polling alone can observe a quiescent-but-incomplete file.
+  wait 2>/dev/null
+  osz=$(stat -c%s "$tmpdir/out")
+  esz=$(stat -c%s "$tmpdir/err")
+  if (( osz > cap || esz > cap )); then
+    echo "omaconnect-exec: one-shot output exceeded ${cap} bytes, dropped" >&2
+    exit 3
+  fi
+  cat "$tmpdir/out"
+  cat "$tmpdir/err" >&2
+  exit "$rc"
+fi
+
+# --- watch mode: byte-at-a-time record framing with a hard length cap ------
+fifo=$(mktemp -u)
+mkfifo "$fifo" || exit 2
+"$@" >"$fifo" 2>/dev/null &
+prod=$!
+cleanup() {
+  kill -KILL "$prod" 2>/dev/null
+  rm -f "$fifo"
+}
+trap cleanup EXIT
+exec 3<"$fifo"
+rm -f "$fifo" # unlinked; the open fd keeps it alive
+
+drops=0
+line=""
+len=0
+overflow=0
+# Discard a newline-free flood in 1MiB blocks (per-byte reading would take
+# forever on megabytes of garbage). A block shorter than requested means the
+# newline boundary was hit; a full block means keep discarding; EOF ends it.
+drain_record() {
+  local chunk st
+  while true; do
+    chunk=""
+    IFS= read -r -s -n 1048576 -d $'\n' chunk <&3
+    st=$?
+    if (( st == 0 )); then
+      if (( ${#chunk} < 1048576 )); then
+        return 0 # boundary found (delimiter consumed)
+      fi
+      continue # full block, no boundary yet
+    fi
+    return 1 # EOF: no boundary coming
+  done
+}
+while true; do
+  c=""
+  # Capital -N: exact single-byte reads. Lowercase -n DISCARDS bytes beyond
+  # the first on pipes (no pushback), silently dropping records.
+  IFS= read -r -s -N 1 c <&3
+  st=$?
+  if [[ -z $c ]]; then
+    if (( st != 0 )); then
+      # EOF: flush an unterminated tail as a final record.
+      if [[ -n $line && $overflow -eq 0 ]]; then
+        printf '%s\n' "$line"
+      fi
+      break
+    fi
+    continue # NUL byte: cannot occur in JSON; skip.
+  fi
+  if [[ $c == $'\n' ]]; then
+    if (( overflow == 0 )); then
+      printf '%s\n' "$line"
+      drops=0
+    fi
+    line=""
+    len=0
+    overflow=0
+    continue
+  fi
+  if (( overflow == 0 )); then
+    line+=$c
+    len=$((len + 1))
+    if (( len > cap )); then
+      overflow=1
+      line=""
+      len=0
+      drops=$((drops + 1))
+      echo "omaconnect-exec: dropped overlong record (>${cap} bytes)" >&2
+      if (( drops > 100 )); then
+        echo "omaconnect-exec: too many overlong records, stopping" >&2
+        exit 3
+      fi
+      if drain_record; then
+        overflow=0 # boundary located; resume normal framing
+      else
+        break # EOF inside the flood; nothing left to frame
+      fi
+    fi
+  fi
+done
+# Producer exited (EOF): report its code so QML can tell "daemon down"
+# apart from a clean end of stream.
+wait "$prod" 2>/dev/null
+exit $?

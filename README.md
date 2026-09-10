@@ -93,6 +93,16 @@ qs ipc call ekollof.omaconnect toggle
 qs ipc call ekollof.omaconnect refresh
 ```
 
+## Resource limits
+
+Phone-influenced data is untrusted input. Every backend call runs through
+`bin/omaconnect-exec`, which caps one-shot stdout/stderr (1 MiB each) and
+watch-stream records (64 KiB each, overlong records dropped). Overflow kills
+the producer and surfaces exit code 3, which the panel reports as a dropped
+action. Parsed strings and lists are additionally clipped in `Model.js`
+(device names, titles, message bodies) and the file browser caps at 2000
+entries.
+
 ## Validate / lint
 
 ```bash

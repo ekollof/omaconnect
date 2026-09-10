@@ -48,6 +48,21 @@ Item {
   }
   readonly property int replyableLimit: 5
   readonly property int smsLimit: 5
+  // Byte ceilings enforced by bin/omaconnect-exec (see its header): QML-side
+  // collectors/parsers accumulate without bounds, and this data is
+  // phone-influenced. One-shot stdout/stderr each capped at runCap; watch
+  // records longer than watchLineCap are dropped (see watchDrops).
+  readonly property int runCap: 1048576
+  readonly property int watchLineCap: 65536
+
+  // Absolute path of the bundled framing helper, resolved against this file
+  // so the installed clone location never matters.
+  readonly property string helperBin: {
+    var url = String(Qt.resolvedUrl("bin/omaconnect-exec"))
+    if (url.indexOf("file://") === 0) url = url.slice(7)
+    try { url = decodeURIComponent(url) } catch (e) {}
+    return url
+  }
 
   // ---------- in-panel file browser (outbound share) ----------
   // Native Qt dialogs are out: instantiating the GTK platform file chooser
@@ -55,8 +70,10 @@ Item {
   // log). Listing via `ls` and rendering rows in the panel instead.
 
   property string browseDir: ""
-  property var browseEntries: [] // {name, isDir, path}
+  property var browseEntries: [] // {name, isDir, path}, capped at browseLimit
   property bool browseBusy: false
+  property bool browseTruncated: false
+  readonly property int browseLimit: 2000
 
   function browseHome() {
     browse(Quickshell.env("HOME") || "/home")
@@ -84,7 +101,8 @@ Item {
     var dir = String(path || "").trim()
     if (dir === "" || browseProc.running) return
     browseBusy = true
-    browseProc.command = ["ls", "-1A", "-p", "--group-directories-first", "--", dir]
+    browseProc.command = [root.helperBin, "run", String(root.runCap), "--",
+      "ls", "-1A", "-p", "--group-directories-first", "--", dir]
     browseProc.running = true
   }
 
@@ -157,7 +175,7 @@ Item {
     _actionOutput = ""
     lastError = ""
     actionStatus = ""
-    actionProc.command = ["kcd"].concat(args)
+    actionProc.command = [root.helperBin, "run", String(root.runCap), "--", "kcd"].concat(args)
     actionProc.running = true
   }
 
@@ -263,7 +281,7 @@ Item {
       devices: devs, batteries: bats,
       primary: primaryDevice ? String(primaryDevice.id) : null,
       browseDir: browseDir, browseCount: (browseEntries || []).length,
-      browseBusy: browseBusy, replyable: (replyable || []).length,
+      browseBusy: browseBusy, browseTruncated: browseTruncated, replyable: (replyable || []).length,
       sms: (smsList || []).length,
       nowPlaying: nowPlaying ? (String(nowPlaying.title || "") + " — " + String(nowPlaying.artist || "")) : null,
       sharePath: String(sharePath || ""),
@@ -318,14 +336,14 @@ Item {
       batteries = all
       break
     case "notification": {
-      var replyId = Model.str(payload, "requestReplyId", "")
+      var replyId = Model.str(payload, "requestReplyId", "", 128)
       if (replyId !== "") {
         var entry = {
           deviceId: String(event.deviceId),
           replyId: replyId,
-          appName: Model.str(payload, "appName", "Phone"),
-          title: Model.str(payload, "title", ""),
-          text: Model.str(payload, "text", ""),
+          appName: Model.str(payload, "appName", "Phone", 100),
+          title: Model.str(payload, "title", "", 500),
+          text: Model.str(payload, "text", "", 2000),
           timestamp: event.timestamp
         }
         var list = ([entry]).concat(replyable || [])
@@ -335,39 +353,39 @@ Item {
     }
     case "notification.canceled":
       // Phone dismissed it — nothing to keep offering a reply for.
-      removeReplyable(Model.str(payload, "id", ""))
+      removeReplyable(Model.str(payload, "id", "", 128))
       break
     case "share.complete":
-      notify("File received", Model.str(payload, "file", "A file") + " saved to phone downloads")
+      notify("File received", Model.str(payload, "file", "A file", 500) + " saved to phone downloads")
       break
     case "share.url":
-      notify("Link shared", Model.str(payload, "url", ""))
+      notify("Link shared", Model.str(payload, "url", "", 2000))
       break
     case "share.text":
-      notify("Text shared", Model.str(payload, "text", "").slice(0, 120))
+      notify("Text shared", Model.str(payload, "text", "", 2000).slice(0, 120))
       break
     case "telephony.ringing": {
-      var who = Model.str(payload, "contactName", "") || Model.str(payload, "phoneNumber", "Unknown caller")
+      var who = Model.str(payload, "contactName", "", 100) || Model.str(payload, "phoneNumber", "Unknown caller", 100)
       notify("Incoming call", who + " — open OMAConnect to mute")
       break
     }
     case "telephony.missed": {
-      var missed = Model.str(payload, "contactName", "") || Model.str(payload, "phoneNumber", "Unknown caller")
+      var missed = Model.str(payload, "contactName", "", 100) || Model.str(payload, "phoneNumber", "Unknown caller", 100)
       notify("Missed call", missed)
       break
     }
     case "sftp.mount": {
-      var mountErr = Model.str(payload, "errorMessage", "")
+      var mountErr = Model.str(payload, "errorMessage", "", 500)
       if (mountErr !== "") notify("SFTP error", mountErr)
       break
     }
     case "sms.incoming": {
       var sms = {
         deviceId: String(event.deviceId),
-        sender: Model.str(payload, "sender", "Unknown"),
-        body: Model.str(payload, "body", ""),
-        date: Model.str(payload, "date", ""),
-        threadId: Model.str(payload, "thread_id", "")
+        sender: Model.str(payload, "sender", "Unknown", 100),
+        body: Model.str(payload, "body", "", 2000),
+        date: Model.str(payload, "date", "", 64),
+        threadId: Model.str(payload, "thread_id", "", 64)
       }
       var threads = ([sms]).concat(smsList || [])
       smsList = threads.slice(0, smsLimit)
@@ -375,7 +393,7 @@ Item {
       break
     }
     case "sms.attachment":
-      notify("MMS attachment", Model.str(payload, "filename", "saved"))
+      notify("MMS attachment", Model.str(payload, "filename", "saved", 500))
       break
     case "mpris.update":
       refreshMpris()
@@ -448,14 +466,14 @@ Item {
         return
       }
       root.kcdInstalled = true
-      statusProc.command = ["kcd", "status", "--json"]
+      statusProc.command = [root.helperBin, "run", String(root.runCap), "--", "kcd", "status", "--json"]
       statusProc.running = true
     }
   }
 
   Process {
     id: devicesProc
-    command: ["kcd", "devices", "--json"]
+    command: [helperBin, "run", String(runCap), "--", "kcd", "devices", "--json"]
     running: false
     stdout: StdioCollector {
       waitForEnd: true
@@ -479,7 +497,7 @@ Item {
   // distinct from "unknown" so the panel can show "No media playing".
   Process {
     id: mprisProc
-    command: ["kcd", "mpris", "status", "--json"]
+    command: [helperBin, "run", String(runCap), "--", "kcd", "mpris", "status", "--json"]
     running: false
     stdout: StdioCollector {
       waitForEnd: true
@@ -492,8 +510,9 @@ Item {
   Process {
     id: watchProc
     // Filtered to the events the panel actually consumes; kcd reconnects by
-    // itself if the daemon restarts, with backoff up to 30s.
-    command: ["kcd", "watch", "--json", "--events",
+    // itself if the daemon restarts, with backoff up to 30s. Framed through
+    // the helper so a newline-free flood can never pile up in the parser.
+    command: [helperBin, "watch", String(watchLineCap), "--", "kcd", "watch", "--json", "--events",
       "device.added,device.connected,device.disconnected,device.removed," +
       "pair.requested,pair.accepted,pair.rejected," +
       "battery.update,notification,notification.canceled," +
@@ -568,7 +587,10 @@ Item {
         }
         root.refreshDevices()
       } else {
-        if (!root.lastError) root.lastError = "Action failed (exit " + code + ")"
+        // Exit 3 is the framing helper's overflow signal (see
+        // bin/omaconnect-exec): backend output exceeded safety limits.
+        if (code === 3) root.lastError = "Backend output exceeded safety limits — action dropped"
+        else if (!root.lastError) root.lastError = "Action failed (exit " + code + ")"
         if (tag === "pair") {
           var next = {}
           for (var k in root.pendingPairs)
@@ -590,8 +612,13 @@ Item {
       onStreamFinished: {
         var dir = String((browseProc.command || []).slice(-1)[0] || "")
         var entries = []
+        var truncated = false
         var lines = String(text || "").split("\n")
         for (var i = 0; i < lines.length; i++) {
+          if (entries.length >= root.browseLimit) {
+            truncated = true
+            break
+          }
           var line = lines[i]
           if (line === "") continue
           var isDir = line.charAt(line.length - 1) === "/"
@@ -601,6 +628,7 @@ Item {
         }
         root.browseDir = dir
         root.browseEntries = entries
+        root.browseTruncated = truncated
         root.browseBusy = false
         root.lastError = ""
       }
@@ -615,7 +643,7 @@ Item {
 
   Process {
     id: doctorProc
-    command: ["kcd", "doctor"]
+    command: [helperBin, "run", String(runCap), "--", "kcd", "doctor"]
     running: false
     stdout: StdioCollector {
       waitForEnd: true

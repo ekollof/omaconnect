@@ -4,6 +4,8 @@
 
 // --- devices (`kcd devices --json`) ---
 // Actual keys are lowercase: {id, name, type, state, cert_fp, last_seen, connected}
+// Device registries are tiny; a hard cap keeps a malformed backend from
+// inflating the model. Field widths bound retained strings.
 function parseDevicesJson(raw) {
   var text = String(raw || "").trim()
   if (text === "") return { ok: true, devices: [] }
@@ -15,13 +17,14 @@ function parseDevicesJson(raw) {
   }
   if (!parsed || typeof parsed.length !== "number") return { ok: true, devices: [] }
   var devices = []
-  for (var i = 0; i < parsed.length; i++) {
+  var n = Math.min(parsed.length, 256)
+  for (var i = 0; i < n; i++) {
     var d = parsed[i] || {}
     devices.push({
-      id: String(d.id || ""),
-      name: String(d.name || "Unknown device"),
-      type: String(d.type || "phone"),
-      state: String(d.state || "UNKNOWN"),
+      id: str(d, "id", "", 64),
+      name: str(d, "name", "Unknown device", 100),
+      type: str(d, "type", "phone", 20),
+      state: str(d, "state", "UNKNOWN", 32),
       connected: d.connected === true
     })
   }
@@ -103,9 +106,11 @@ function parseWatchLine(line) {
   }
 }
 
-function str(payload, key, fallback) {
+function str(payload, key, fallback, max) {
   var v = payload ? payload[key] : undefined
-  return (v === undefined || v === null) ? (fallback || "") : String(v)
+  var s = (v === undefined || v === null) ? (fallback || "") : String(v)
+  if (max && s.length > max) return s.slice(0, max)
+  return s
 }
 
 function num(payload, key, fallback) {
@@ -127,13 +132,13 @@ function parseMprisStatus(raw) {
   if (!parsed || typeof parsed.length !== "number") return null
   for (var i = 0; i < parsed.length; i++) {
     var p = parsed[i] || {}
-    var title = String(p.title || "")
+    var title = str(p, "title", "", 300)
     if (title === "") continue
     return {
-      player: String(p.player || ""),
+      player: str(p, "player", "", 100),
       title: title,
-      artist: String(p.artist || ""),
-      album: String(p.album || ""),
+      artist: str(p, "artist", "", 300),
+      album: str(p, "album", "", 300),
       isPlaying: p.isPlaying === true
     }
   }

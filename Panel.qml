@@ -437,6 +437,16 @@ Panel {
             text: "Selected: " + root.sharePath
           }
           Text {
+            visible: kcd.browseTruncated
+            width: parent.width
+            elide: Text.ElideRight
+            color: Qt.darker(root.bar.foreground, 1.5)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            textFormat: Text.PlainText
+            text: "Showing first entries only"
+          }
+          Text {
             visible: kcd.primaryDevice !== null
             width: parent.width
             elide: Text.ElideRight
