@@ -109,9 +109,20 @@ Panel {
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
+      // Outer scroll: the card height is clamped to the screen by
+      // fittedContentHeight, so without this anything below the fold
+      // (expanded browser + SMS + media) would be silently clipped.
+      Flickable {
+        id: scroll
+        anchors.fill: parent
+        contentWidth: width
+        contentHeight: column.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+
       Column {
         id: column
-        anchors.fill: parent
+        width: scroll.width
         spacing: Style.space(14)
 
         PanelHero {
@@ -688,9 +699,8 @@ Panel {
             text: kcd.doctorSummary
           }
         }
-      }
+      } // end scrollable column
+      } // end scroll Flickable
     }
   }
 }
-
-// reload-trigger: in-panel browser active
