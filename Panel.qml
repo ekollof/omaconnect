@@ -48,10 +48,10 @@ Panel {
   }
 
   property string sharePath: ""
-  property bool shareExpanded: true
+  property bool shareExpanded: false
   property string smsNumber: ""
   property string smsMessage: ""
-  property bool smsExpanded: true
+  property bool smsExpanded: false
   property var replyDrafts: ({})
 
   function setReplyDraft(replyId, text) {
