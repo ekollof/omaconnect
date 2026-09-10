@@ -51,6 +51,7 @@ Panel {
   property bool shareExpanded: false
   property string smsNumber: ""
   property string smsMessage: ""
+  property bool smsExpanded: false
   property var replyDrafts: ({})
 
   function setReplyDraft(replyId, text) {
@@ -341,46 +342,22 @@ Panel {
         }
 
         // ---------- share: in-panel file browser ----------
-        Column {
+        // Collapsed by default to keep the panel compact; expanding a fresh
+        // browser also triggers its first directory load.
+        CollapsibleSection {
           width: parent.width
-          spacing: Style.space(8)
+          title: "SHARE FILE"
+          foreground: root.bar.foreground
+          fontFamily: root.bar.fontFamily
           visible: kcd.daemonState === "up" && kcd.primaryDevice !== null
-
-          PanelSeparator { foreground: root.bar.foreground }
-
-          // Collapsible section header: chevron toggles the browser below.
-          // Collapsed by default to keep the panel compact; expanding a
-          // fresh browser also triggers its first directory load.
-          Row {
-            width: parent.width
-            spacing: Style.space(8)
-
-            Button {
-              iconText: root.shareExpanded ? "▾" : "▸"
-              tooltipText: root.shareExpanded ? "Collapse" : "Expand"
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              onClicked: {
-                root.shareExpanded = !root.shareExpanded
-                if (root.shareExpanded && kcd.primaryDevice
-                    && (kcd.browseEntries || []).length === 0 && !kcd.browseBusy) {
-                  kcd.browseHome()
-                }
-              }
-            }
-            PanelSectionHeader {
-              width: parent.width - 40
-              anchors.verticalCenter: parent.verticalCenter
-              text: "SHARE FILE"
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
+          expanded: root.shareExpanded
+          onToggled: {
+            root.shareExpanded = !root.shareExpanded
+            if (root.shareExpanded && kcd.primaryDevice
+                && (kcd.browseEntries || []).length === 0 && !kcd.browseBusy) {
+              kcd.browseHome()
             }
           }
-
-          Column {
-            width: parent.width
-            spacing: Style.space(8)
-            visible: root.shareExpanded
 
           Row {
             width: parent.width
@@ -458,7 +435,6 @@ Panel {
             textFormat: Text.PlainText
             text: "To " + (kcd.primaryDevice ? kcd.primaryDevice.name : "")
           }
-          } // end collapsible share browser
         }
 
         // ---------- phone files (SFTP) ----------
@@ -528,18 +504,14 @@ Panel {
         }
 
         // ---------- SMS ----------
-        Column {
+        CollapsibleSection {
           width: parent.width
-          spacing: Style.space(8)
+          title: "SMS"
+          foreground: root.bar.foreground
+          fontFamily: root.bar.fontFamily
           visible: kcd.daemonState === "up" && kcd.primaryDevice !== null
-
-          PanelSeparator { foreground: root.bar.foreground }
-
-          PanelSectionHeader {
-            text: "SMS"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-          }
+          expanded: root.smsExpanded
+          onToggled: root.smsExpanded = !root.smsExpanded
 
           TextField {
             width: parent.width
