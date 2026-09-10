@@ -74,6 +74,20 @@ omarchy plugin validate /home/ekollof/src/omaconnect
 qmllint -I "$OMARCHY_PATH/shell" /home/ekollof/src/omaconnect/*.qml
 ```
 
+## Troubleshooting
+
+**Phone says "Failed receiving file"**: file transfers need the phone to
+open a TCP connection *back* to the desktop (ports 1739–1764), while the
+control channel usually works because the desktop dials *out*. With
+Omarchy's default-deny `ufw`, allow the pre-installed kcd profile:
+
+```bash
+sudo ufw allow kcd
+sudo ufw reload
+```
+
+(`kcd-bin` ships the profile; it just isn't enabled automatically.)
+
 ## Roadmap (v2)
 
 SFTP browse/mount opener, SMS compose, MPRIS phone-playback controls,
