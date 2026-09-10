@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "ekollof.omaconnect",
   "name": "OMAConnect",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "author": "Emiel Kollof <emiel@kollof.nl>",
   "license": "MIT",
   "description": "KDE Connect devices in the Omarchy bar via the kcd daemon: pairing, battery, notification replies, file sharing, and quick actions.",
