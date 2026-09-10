@@ -19,10 +19,10 @@
 # exit/overflow paths reap descendants too — nothing can retain a writer.
 export LC_ALL=C
 set -u
-# Job control so every background producer runs in its OWN process group
-# (pgid == its pid). Overflow/exit paths kill the whole group, so forked
-# descendants can neither retain pipe writers nor survive the wrapper.
-set -m
+# NOTE: no `set -m` here — monitor mode breaks bare `wait` for process
+# substitutions (10% empty reads in testing). Producers get their own group
+# via `setsid` instead (verified: no fork, pid preserved, wait intact), so
+# exit/overflow paths can reap whole descendant trees with one group kill.
 
 usage() {
   echo "usage: omaconnect-exec {run <max-bytes> | watch <max-line-bytes>} -- cmd..." >&2
@@ -53,7 +53,11 @@ if [[ $mode == "run" ]]; then
   # pipe (SIGPIPE) which terminates it. wait still reports its real code.
   # timeout (not a hand-rolled sleep watchdog: those orphan their sleepers)
   # bounds total runtime; -k escalates to KILL.
-  timeout -k 5 120 "$@" > >(head -c $((cap + 1)) >"$tmpdir/out") 2> >(head -c $((cap + 1)) >"$tmpdir/err") &
+  # `setsid` OUTSIDE `timeout`: the unit (timeout+kcd+descendants) shares one
+  # fresh group led by $prod, so the group kill reaps everything. (Setsid
+  # inside would leave timeout in our group and point the group kill at the
+  # script itself.)
+  setsid timeout -k 5 120 "$@" > >(head -c $((cap + 1)) >"$tmpdir/out") 2> >(head -c $((cap + 1)) >"$tmpdir/err") &
   prod=$!
   wait "$prod"
   rc=$?
@@ -89,7 +93,8 @@ mkfifo -m 600 "$rundir/stream" || { rm -rf "$rundir"; exit 2; }
 fifo="$rundir/stream"
 [[ -p $fifo ]] || { rm -rf "$rundir"; exit 2; }
 [[ $(stat -c '%a %u' "$fifo") == "600 $EUID" ]] || { rm -rf "$rundir"; exit 2; }
-"$@" >"$fifo" 2>/dev/null &
+# setsid: private process group for the producer (see header note).
+setsid "$@" >"$fifo" 2>/dev/null &
 prod=$!
 cleanup() {
   kill_group "$prod"
