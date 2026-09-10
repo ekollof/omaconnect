@@ -540,7 +540,15 @@ Item {
         else if (tag === "share") root.actionStatus = "File sent"
         else if (tag === "sftp-volumes") root.actionStatus = out !== "" ? out.slice(0, 500) : "No volumes reported"
         else if (tag === "sftp-mount") {
-          root.actionStatus = out !== "" ? out.slice(0, 300) : "Mounted"
+          var mountPath = Model.parseMountPoint(out)
+          if (mountPath !== "") {
+            root.actionStatus = "Mounted at " + mountPath
+            // Open the mount in the default file manager (xdg-open resolves
+            // to Nautilus/Thunar/… per the user's defaults).
+            Quickshell.execDetached(["xdg-open", mountPath])
+          } else {
+            root.actionStatus = out !== "" ? out.slice(0, 300) : "Mounted"
+          }
           root.notify("Phone files", root.actionStatus)
         }
         else if (tag === "sftp-unmount") root.actionStatus = "Unmounted"

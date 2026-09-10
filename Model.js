@@ -147,6 +147,13 @@ function nowPlayingLabel(nowPlaying) {
   return a !== "" ? t + " — " + a : t
 }
 
+// --- sftp (`kcd sftp mount` prints "Mounted at: <path>") ---
+function parseMountPoint(output) {
+  var text = String(output || "")
+  var m = /Mounted at:\s*(\S+)/.exec(text)
+  return m ? m[1] : ""
+}
+
 // --- battery pill ---
 function batteryIcon(charge, charging) {
   if (charging === true) return "󰂄"
