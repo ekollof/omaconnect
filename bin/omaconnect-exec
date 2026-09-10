@@ -1,182 +1,284 @@
-#!/bin/bash
-# omaconnect-exec — bounded framing layer between kcd (phone-influenced data)
-# and QML. Quickshell accumulates process output and watch-stream lines with
-# no byte ceiling, so a compromised/malformed peer or backend could exhaust
-# the shared shell process before Model.js ever parses a byte.
-#
-#   omaconnect-exec run <max-total-bytes> -- cmd...    one-shot: stdout and
-#       stderr each capped; overflow kills the producer (SIGPIPE), prints
-#       nothing, exits 3.
-#   omaconnect-exec watch <max-line-bytes> -- cmd...   stream: records longer
-#       than the cap are dropped (stderr note); >100 consecutive drops kills
-#       the producer and exits 3.
-#
-# Exit codes: the producer's code on success; 3 on any limit breach; 2 on
-# misuse. Byte counting runs under LC_ALL=C so multibyte input is measured
-# in bytes, and bytes are forwarded verbatim (split points never alter data).
-# Rendezvous objects live in an atomic mode-0700 private directory (verified,
-# removed on exit); producers run in their own process group (`set -m`) so
-# exit/overflow paths reap descendants too — nothing can retain a writer.
-export LC_ALL=C
-set -u
-# NOTE: no `set -m` here — monitor mode breaks bare `wait` for process
-# substitutions (10% empty reads in testing). Producers get their own group
-# via `setsid` instead (verified: no fork, pid preserved, wait intact), so
-# exit/overflow paths can reap whole descendant trees with one group kill.
+#!/usr/bin/env python3
+"""omaconnect-exec — bounded framing layer between kcd (phone-influenced
+data) and QML. Quickshell accumulates process output and watch-stream lines
+with no byte ceiling, so a compromised/malformed peer or backend could
+exhaust the shared shell process before Model.js ever parses a byte.
 
-usage() {
-  echo "usage: omaconnect-exec {run <max-bytes> | watch <max-line-bytes>} -- cmd..." >&2
-  exit 2
-}
+    omaconnect-exec run <max-total-bytes> -- cmd...    one-shot: stdout and
+        stderr each capped; overflow kills the producer group, prints
+        nothing, exits 3.
+    omaconnect-exec watch <max-line-bytes> -- cmd...   stream: records longer
+        than the cap are dropped (stderr note); >100 consecutive drops kills
+        the producer group and exits 3.
 
-[[ $# -ge 4 ]] || usage
-mode=$1
-cap=$2
-[[ $mode == "run" || $mode == "watch" ]] || usage
-[[ $cap =~ ^[0-9]+$ ]] && (( cap > 0 )) || usage
-[[ $3 == "--" ]] || usage
-shift 3
-(( $# > 0 )) || usage
+Exit codes: the producer's code on success; 3 on any limit breach; 124 on
+producer timeout (run mode, 120s); 2 on misuse.
 
-# Kill a producer process GROUP (never a bare pid: descendants must go too).
-kill_group() {
-  kill -KILL -- "-$1" 2>/dev/null
-}
+Design (all data paths are anonymous):
+- Transport is anonymous ``os.pipe2`` pairs only. There are no pathnames to
+  guess, swap, or re-resolve — no tmpdirs, no FIFOs, no stat/cat cycles. All
+  reads/writes go through already-open descriptors.
+- The producer runs in its own process group (``start_new_session``) so
+  exit/overflow/timeout paths can killpg/reap the whole descendant tree;
+  nothing forked downstream can retain a pipe writer or survive the wrapper.
+- Bytes are counted and forwarded verbatim (no decoding), so multibyte
+  input is measured exactly and split points never alter data.
+"""
+import os
+import selectors
+import subprocess
+import sys
+import time
 
-if [[ $mode == "run" ]]; then
-  tmpdir=$(mktemp -d) || exit 2
-  # GNU mktemp has no -m flag, but creates directories 0700 by default; the
-  # stat check enforces it and fails closed otherwise.
-  [[ $(stat -c '%a %u' "$tmpdir") == "700 $EUID" ]] || { rm -rf "$tmpdir"; exit 2; }
-  trap 'rm -rf "$tmpdir"' EXIT
-  # head -c bounds both streams on disk; further producer writes hit a closed
-  # pipe (SIGPIPE) which terminates it. wait still reports its real code.
-  # timeout (not a hand-rolled sleep watchdog: those orphan their sleepers)
-  # bounds total runtime; -k escalates to KILL.
-  # `setsid` OUTSIDE `timeout`: the unit (timeout+kcd+descendants) shares one
-  # fresh group led by $prod, so the group kill reaps everything. (Setsid
-  # inside would leave timeout in our group and point the group kill at the
-  # script itself.)
-  setsid timeout -k 5 120 "$@" > >(head -c $((cap + 1)) >"$tmpdir/out") 2> >(head -c $((cap + 1)) >"$tmpdir/err") &
-  prod=$!
-  wait "$prod"
-  rc=$?
-  # Group-kill AFTER reaping the producer: forked descendants holding the
-  # pipes open would otherwise keep the heads (and our bare wait below)
-  # alive indefinitely. Heads live in our own group and are unaffected.
-  kill_group "$prod"
-  # Bare wait reaps the head processes so the files below are final — size
-  # polling alone can observe a quiescent-but-incomplete file.
-  wait 2>/dev/null
-  osz=$(stat -c%s "$tmpdir/out")
-  esz=$(stat -c%s "$tmpdir/err")
-  if (( osz > cap || esz > cap )); then
-    echo "omaconnect-exec: one-shot output exceeded ${cap} bytes, dropped" >&2
-    exit 3
-  fi
-  cat "$tmpdir/out"
-  cat "$tmpdir/err" >&2
-  exit "$rc"
-fi
+RUN_TIMEOUT_SECS = 120
+WATCH_MAX_CONSECUTIVE_DROPS = 100
+CHUNK = 65536
 
-# --- watch mode: byte-at-a-time record framing with a hard length cap ------
-# Private rendezvous: the directory is created atomically with mode 0700, so
-# no other local process can pre-create, swap, or even enter it; the FIFO
-# inside inherits that isolation and is additionally created + verified with
-# an explicit restrictive mode. Identity (fifo + ownership) is re-checked
-# before use, and the whole directory is removed on exit.
-rundir=$(mktemp -d) || exit 2
-# GNU mktemp has no -m flag, but creates directories 0700 by default; the
-# stat check below enforces it and fails closed otherwise.
-[[ $(stat -c '%a %u' "$rundir") == "700 $EUID" ]] || { rm -rf "$rundir"; exit 2; }
-mkfifo -m 600 "$rundir/stream" || { rm -rf "$rundir"; exit 2; }
-fifo="$rundir/stream"
-[[ -p $fifo ]] || { rm -rf "$rundir"; exit 2; }
-[[ $(stat -c '%a %u' "$fifo") == "600 $EUID" ]] || { rm -rf "$rundir"; exit 2; }
-# setsid: private process group for the producer (see header note).
-setsid "$@" >"$fifo" 2>/dev/null &
-prod=$!
-cleanup() {
-  kill_group "$prod"
-  rm -rf "$rundir"
-}
-trap cleanup EXIT
-exec 3<"$fifo"
-# The directory is NOT unlinked early: it stays (0700, ours) until the EXIT
-# trap removes it, so no other local process can swap the FIFO out from
-# under fd 3 — re-validating by path would only re-read the same object,
-# hence the mode/ownership checks above are the effective verification.
 
-drops=0
-line=""
-len=0
-overflow=0
-# Discard a newline-free flood in 1MiB blocks (per-byte reading would take
-# forever on megabytes of garbage). A block shorter than requested means the
-# newline boundary was hit; a full block means keep discarding; EOF ends it.
-drain_record() {
-  local chunk st
-  while true; do
-    chunk=""
-    IFS= read -r -s -n 1048576 -d $'\n' chunk <&3
-    st=$?
-    if (( st == 0 )); then
-      if (( ${#chunk} < 1048576 )); then
-        return 0 # boundary found (delimiter consumed)
-      fi
-      continue # full block, no boundary yet
-    fi
-    return 1 # EOF: no boundary coming
-  done
-}
-while true; do
-  c=""
-  # Capital -N: exact single-byte reads. Lowercase -n DISCARDS bytes beyond
-  # the first on pipes (no pushback), silently dropping records.
-  IFS= read -r -s -N 1 c <&3
-  st=$?
-  if [[ -z $c ]]; then
-    if (( st != 0 )); then
-      # EOF: flush an unterminated tail as a final record.
-      if [[ -n $line && $overflow -eq 0 ]]; then
-        printf '%s\n' "$line"
-      fi
-      break
-    fi
-    continue # NUL byte: cannot occur in JSON; skip.
-  fi
-  if [[ $c == $'\n' ]]; then
-    if (( overflow == 0 )); then
-      printf '%s\n' "$line"
-      drops=0
-    fi
-    line=""
-    len=0
-    overflow=0
-    continue
-  fi
-  if (( overflow == 0 )); then
-    line+=$c
-    len=$((len + 1))
-    if (( len > cap )); then
-      overflow=1
-      line=""
-      len=0
-      drops=$((drops + 1))
-      echo "omaconnect-exec: dropped overlong record (>${cap} bytes)" >&2
-      if (( drops > 100 )); then
-        echo "omaconnect-exec: too many overlong records, stopping" >&2
-        exit 3
-      fi
-      if drain_record; then
-        overflow=0 # boundary located; resume normal framing
-      else
-        break # EOF inside the flood; nothing left to frame
-      fi
-    fi
-  fi
-done
-# Producer exited (EOF): report its code so QML can tell "daemon down"
-# apart from a clean end of stream.
-wait "$prod" 2>/dev/null
-exit $?
+def usage():
+    sys.stderr.write(
+        "usage: omaconnect-exec {run <max-bytes> | "
+        "watch <max-line-bytes>} -- cmd...\n"
+    )
+    return 2
+
+
+def spawn(cmd):
+    """Start cmd with stdout/stderr on fresh anonymous pipes.
+
+    Returns (Popen, out_fd, err_fd_or_None). The producer leads its own
+    process group for whole-tree kill/reap.
+    """
+    out_r, out_w = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
+    err_r, err_w = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=out_w,
+            stderr=err_w,
+            start_new_session=True,
+            close_fds=True,
+        )
+    finally:
+        os.close(out_w)
+        os.close(err_w)
+    return proc, out_r, err_r
+
+
+def kill_group(proc):
+    try:
+        os.killpg(proc.pid, 9)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
+def reap(proc):
+    """Wait for the producer; -1 if it is already gone."""
+    try:
+        return proc.wait()
+    except Exception:
+        return -1
+
+
+def norm_code(rc):
+    """Match shell wait(1) semantics: signal deaths become 128+signo so
+    QML (which only ran producers via bash before) sees identical codes."""
+    if isinstance(rc, int) and rc < 0:
+        return 128 + abs(rc)
+    if isinstance(rc, int):
+        return rc
+    return 1
+
+
+def run_mode(cap, cmd):
+    proc, out_r, err_r = spawn(cmd)
+    out_parts = []
+    err_parts = []
+    out_len = 0
+    err_len = 0
+    overflow = False
+    sel = selectors.DefaultSelector()
+    sel.register(out_r, selectors.EVENT_READ, "out")
+    sel.register(err_r, selectors.EVENT_READ, "err")
+    live = {"out", "err"}
+    deadline = time.monotonic() + RUN_TIMEOUT_SECS
+    timed_out = False
+    while live:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
+        for key, _mask in sel.select(timeout=remaining):
+            name = key.data
+            try:
+                data = os.read(key.fd, CHUNK)
+            except (BlockingIOError, InterruptedError):
+                continue
+            except OSError:
+                data = b""
+            if not data:
+                sel.unregister(key.fd)
+                os.close(key.fd)
+                live.discard(name)
+                continue
+            if name == "out":
+                if out_len + len(data) > cap + 1:
+                    overflow = True
+                else:
+                    out_parts.append(data)
+                    out_len += len(data)
+            else:
+                if err_len + len(data) > cap + 1:
+                    overflow = True
+                else:
+                    err_parts.append(data)
+                    err_len += len(data)
+            if overflow:
+                break
+        if overflow:
+            break
+    if timed_out:
+        kill_group(proc)
+        reap(proc)
+        sys.stderr.write("omaconnect-exec: producer timed out\n")
+        return 124
+    if overflow:
+        kill_group(proc)
+        reap(proc)
+        sys.stderr.write(
+            "omaconnect-exec: one-shot output exceeded %d bytes, "
+            "dropped\n" % cap
+        )
+        return 3
+    try:
+        # Pipes are at EOF: the producer closed its ends and should exit
+        # imminently. Short grace only — a lingerer is abnormal, fail closed.
+        rc = proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        kill_group(proc)
+        reap(proc)
+        sys.stderr.write("omaconnect-exec: producer lingered\n")
+        return 124
+    rc = norm_code(rc)
+    if out_len > cap or err_len > cap:
+        # Raced past the cap between the last check and EOF.
+        sys.stderr.write(
+            "omaconnect-exec: one-shot output exceeded %d bytes, "
+            "dropped\n" % cap
+        )
+        return 3
+    if out_parts:
+        sys.stdout.buffer.write(b"".join(out_parts))
+        sys.stdout.buffer.flush()
+    if err_parts:
+        sys.stderr.buffer.write(b"".join(err_parts))
+        sys.stderr.flush()
+    return rc
+
+
+def watch_mode(cap, cmd):
+    proc, out_r, _err_r = spawn(cmd)
+    os.close(_err_r)  # watch producers must not chatter on our stderr
+    # Blocking reads: the O_NONBLOCK flag from spawn() would turn this loop
+    # into a hot spin on idle streams.
+    os.set_blocking(out_r, True)
+    buf = bytearray()
+    drops = 0
+    # True once the in-progress record has exceeded the cap: its content is
+    # doomed, but the boundary must still be located to resync framing.
+    tainted = False
+
+    def note(msg):
+        sys.stderr.write("omaconnect-exec: %s\n" % msg)
+        sys.stderr.flush()
+
+    def emit_record(rec):
+        sys.stdout.buffer.write(bytes(rec) + b"\n")
+        sys.stdout.buffer.flush()
+
+    def drop_overlong():
+        """Count one overlong record; True when the producer must die."""
+        nonlocal drops
+        drops += 1
+        note("dropped overlong record (>%d bytes)" % cap)
+        if drops > WATCH_MAX_CONSECUTIVE_DROPS:
+            note("too many overlong records, stopping")
+            kill_group(proc)
+            reap(proc)
+            return True
+        return False
+
+    rc = 0
+    try:
+        while True:
+            try:
+                data = os.read(out_r, CHUNK)
+            except (BlockingIOError, InterruptedError):
+                continue
+            except OSError:
+                data = b""
+            if not data:
+                break  # EOF
+            buf += data
+            # Never hold more than one cap past the boundary search: trim
+            # boundary-free excess as it arrives (content already doomed).
+            while True:
+                nl = buf.find(b"\n")
+                if nl < 0:
+                    if len(buf) > cap:
+                        if not tainted:
+                            tainted = True
+                            if drop_overlong():
+                                return 3
+                        if cap > 0:
+                            del buf[:-cap]
+                        else:
+                            del buf[:]
+                    break
+                rec = bytes(buf[:nl])
+                del buf[: nl + 1]
+                if tainted:
+                    # Already counted when the cap was crossed; a
+                    # boundary-free buf can never complete untainted
+                    # over the cap (trimmed above), so no second count.
+                    tainted = False
+                    continue
+                emit_record(rec)
+                drops = 0
+    finally:
+        try:
+            os.close(out_r)
+        except OSError:
+            pass
+    # Flush an unterminated tail as a final record.
+    if buf:
+        if tainted or len(buf) > cap:
+            note("dropped overlong record (>%d bytes)" % cap)
+        else:
+            emit_record(bytes(buf))
+    return norm_code(reap(proc))
+
+
+def main(argv):
+    if len(argv) < 4:
+        return usage()
+    mode, cap_s = argv[0], argv[1]
+    if mode not in ("run", "watch") or argv[2] != "--" or len(argv) < 4:
+        return usage()
+    try:
+        cap = int(cap_s)
+    except ValueError:
+        return usage()
+    if cap <= 0:
+        return usage()
+    cmd = argv[3:]
+    if not cmd:
+        return usage()
+    if mode == "run":
+        return run_mode(cap, cmd)
+    return watch_mode(cap, cmd)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

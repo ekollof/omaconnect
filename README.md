@@ -15,6 +15,9 @@ in QML.
 yay -S kcd-bin        # daemon (>= 1.17.0) + systemd user unit + firewall rules
 ```
 
+Runtime needs are covered by any Omarchy install: `bash`, `coreutils`,
+`python3` (framing layer), `libnotify`, plus the optionals below.
+
 Recommended optional deps (all present in `kcd-bin`'s optdepends):
 
 - `libnotify` — phone notifications with icons via `notify-send`
