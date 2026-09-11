@@ -29,6 +29,10 @@ Item {
   property var replyable: []
   // Recent incoming SMS, newest first (capped): {deviceId, sender, body, date, threadId}.
   property var smsList: []
+  // Dialable contacts learned from call/SMS events: {name, number}, deduped
+  // by number (capped). kcd exposes no phonebook API, so this is a
+  // recent-contacts directory, not the full address book.
+  property var smsContacts: []
   // Phone now-playing state: {player, title, artist, album, isPlaying} or null.
   property var nowPlaying: null
   // Pending outbound pair requests we initiated (deviceId -> true) so the
@@ -48,6 +52,25 @@ Item {
   }
   readonly property int replyableLimit: 5
   readonly property int smsLimit: 5
+  readonly property int contactsLimit: 50
+  readonly property int completionLimit: 6
+
+  function learnContact(name, number) {
+    var cleanNumber = String(number || "").trim()
+    if (cleanNumber === "") return
+    var cleanName = String(name || "").trim() || cleanNumber
+    var list = smsContacts || []
+    for (var i = 0; i < list.length; i++) {
+      if (String(list[i].number) === cleanNumber) {
+        // Refresh the name and recency on repeat sightings.
+        var moved = ([{ name: cleanName, number: cleanNumber }]).concat(
+          list.slice(0, i)).concat(list.slice(i + 1))
+        smsContacts = moved.slice(0, contactsLimit)
+        return
+      }
+    }
+    smsContacts = ([{ name: cleanName, number: cleanNumber }]).concat(list).slice(0, contactsLimit)
+  }
   // Byte ceilings enforced by bin/omaconnect-exec (see its header): QML-side
   // collectors/parsers accumulate without bounds, and this data is
   // phone-influenced. One-shot stdout/stderr each capped at runCap; watch
@@ -284,6 +307,7 @@ Item {
       browseDir: browseDir, browseCount: (browseEntries || []).length,
       browseBusy: browseBusy, browseTruncated: browseTruncated, replyable: (replyable || []).length,
       sms: (smsList || []).length,
+      contacts: (smsContacts || []).length,
       nowPlaying: nowPlaying ? (String(nowPlaying.title || "") + " — " + String(nowPlaying.artist || "")) : null,
       sharePath: String(sharePath || ""),
       action: actionStatus, error: lastError, doctor: doctorSummary
@@ -371,11 +395,13 @@ Item {
       break
     case "telephony.ringing": {
       var who = Model.str(payload, "contactName", "", 100) || Model.str(payload, "phoneNumber", "Unknown caller", 100)
+      learnContact(Model.str(payload, "contactName", "", 100), Model.str(payload, "phoneNumber", "", 100))
       notify("Incoming call", who + " — open OMAConnect to mute")
       break
     }
     case "telephony.missed": {
       var missed = Model.str(payload, "contactName", "", 100) || Model.str(payload, "phoneNumber", "Unknown caller", 100)
+      learnContact(Model.str(payload, "contactName", "", 100), Model.str(payload, "phoneNumber", "", 100))
       notify("Missed call", missed)
       break
     }
@@ -392,6 +418,10 @@ Item {
         date: Model.str(payload, "date", "", 64),
         threadId: Model.str(payload, "thread_id", "", 64)
       }
+      // Sender doubles as a dialable contact when it carries a number;
+      // thread/address details (when the phone provides them) refine it.
+      learnContact(Model.str(payload, "contactName", sms.sender, 100),
+        Model.str(payload, "phoneNumber", Model.dialable(sms.sender), 100))
       var threads = ([sms]).concat(smsList || [])
       smsList = threads.slice(0, smsLimit)
       notify("SMS from " + sms.sender, sms.body.slice(0, 120))

@@ -543,10 +543,36 @@ Panel {
           TextField {
             width: parent.width
             foreground: root.bar.foreground
-            font.family: root.bar.fontFamily
-            placeholderText: "Phone number"
+            fontFamily: root.bar.fontFamily
+            placeholderText: "Phone number or name…"
             text: root.smsNumber
             onTextChanged: root.smsNumber = text
+          }
+
+          // Live completion over learned contacts (calls + SMS threads).
+          // kcd exposes no phonebook, so this completes from numbers the
+          // phone has actually used; manual entry always stays available.
+          Repeater {
+            model: Model.matchContacts(kcd.smsContacts, root.smsNumber, kcd.completionLimit)
+            delegate: Button {
+              required property var modelData
+              width: parent.width
+              leftAlign: true
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              text: (modelData.name !== modelData.number ? modelData.name + " · " : "") + modelData.number
+              onClicked: root.smsNumber = modelData.number
+            }
+          }
+          Text {
+            visible: (kcd.smsContacts || []).length === 0
+            width: parent.width
+            wrapMode: Text.WordWrap
+            color: Qt.darker(root.bar.foreground, 1.5)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            textFormat: Text.PlainText
+            text: "No contacts yet — they appear after calls or messages arrive."
           }
           Row {
             width: parent.width

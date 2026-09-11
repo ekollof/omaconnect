@@ -208,3 +208,31 @@ function batteryLabel(charge, charging) {
   var text = isFinite(c) ? Math.round(c) + "%" : "—"
   return charging === true ? text + " 󰂄" : text
 }
+
+// --- contacts (learned from call/SMS events; kcd has no phonebook API) ---
+// Extract a dialable number from free text (digits, +, spaces, dashes,
+// parens). Returns "" when nothing dialable is present.
+function dialable(value) {
+  var s = String(value || "")
+  var digits = s.replace(/[^0-9+]/g, "")
+  if (digits.replace(/[^0-9]/g, "").length < 3) return ""
+  return s.trim().slice(0, 100)
+}
+
+// Live completion over learned contacts: substring match on name or number,
+// most-recent first, capped. Empty query returns the head of the list.
+function matchContacts(contacts, query, limit) {
+  var list = contacts || []
+  var q = String(query || "").trim().toLowerCase()
+  var out = []
+  var max = limit || 6
+  for (var i = 0; i < list.length && out.length < max; i++) {
+    var c = list[i] || {}
+    var name = String(c.name || "")
+    var number = String(c.number || "")
+    if (q !== "" && name.toLowerCase().indexOf(q) < 0
+        && number.toLowerCase().indexOf(q) < 0) continue
+    out.push({ name: name, number: number })
+  }
+  return out
+}
