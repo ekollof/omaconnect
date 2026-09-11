@@ -2,26 +2,70 @@
 // No Qt imports: every function takes primitives and returns primitives,
 // so rows moving between lists never carry backend objects.
 
+// JSON.parse has no depth limit, and a deeply nested payload could exhaust
+// the QML engine stack before parsing even returns. Our wire shapes never
+// nest deeper than 3 (envelope → payload → fields), so reject anything past
+// 64 first. The string-aware scan fails closed on malformed input, which the
+// parsers below already handle as graceful {ok:false} paths.
+function nestingOk(text, limit) {
+  var depth = 0
+  var inStr = false
+  var esc = false
+  for (var i = 0; i < text.length; i++) {
+    var c = text.charAt(i)
+    if (inStr) {
+      if (esc) esc = false
+      else if (c === "\\") esc = true
+      else if (c === '"') inStr = false
+      continue
+    }
+    if (c === '"') inStr = true
+    else if (c === "[" || c === "{") {
+      depth++
+      if (depth > limit) return false
+    } else if (c === "]" || c === "}") {
+      depth--
+      if (depth < 0) return false
+    }
+  }
+  return !inStr && depth === 0
+}
+
+function safeParseJson(raw, limit) {
+  var text = String(raw || "").trim()
+  if (text === "") return { empty: true }
+  if (!nestingOk(text, limit || 64)) return { malformed: true }
+  try {
+    return { value: JSON.parse(text) }
+  } catch (e) {
+    return { malformed: true }
+  }
+}
 // --- devices (`kcd devices --json`) ---
 // Actual keys are lowercase: {id, name, type, state, cert_fp, last_seen, connected}
 // Device registries are tiny; a hard cap keeps a malformed backend from
 // inflating the model. Field widths bound retained strings.
+// Device IDs double as JS object keys downstream (pendingPairs, batteries,
+// live lookups). The protocol constrains them to [A-Za-z0-9_-]{32,38};
+// anything else is rejected so crafted IDs can neither pollute prototypes
+// nor escalate into unexpected keys.
+function isDeviceId(id) {
+  return /^[A-Za-z0-9_-]{32,38}$/.test(String(id || ""))
+}
 function parseDevicesJson(raw) {
-  var text = String(raw || "").trim()
-  if (text === "") return { ok: true, devices: [] }
-  var parsed = null
-  try {
-    parsed = JSON.parse(text)
-  } catch (e) {
-    return { ok: false, error: "devices: invalid JSON", devices: [] }
-  }
+  var r = safeParseJson(raw, 64)
+  if (r.empty) return { ok: true, devices: [] }
+  if (r.malformed) return { ok: false, error: "devices: invalid JSON", devices: [] }
+  var parsed = r.value
   if (!parsed || typeof parsed.length !== "number") return { ok: true, devices: [] }
   var devices = []
   var n = Math.min(parsed.length, 256)
   for (var i = 0; i < n; i++) {
     var d = parsed[i] || {}
+    var id = str(d, "id", "", 64)
+    if (!isDeviceId(id)) continue
     devices.push({
-      id: str(d, "id", "", 64),
+      id: id,
       name: str(d, "name", "Unknown device", 100),
       type: str(d, "type", "phone", 20),
       state: str(d, "state", "UNKNOWN", 32),
@@ -31,8 +75,7 @@ function parseDevicesJson(raw) {
   return { ok: true, devices: devices }
 }
 
-function isPaired(device) {
-  return !!device && String(device.state || "").toLowerCase() === "paired"
+function isPaired(device) {  return !!device && String(device.state || "").toLowerCase() === "paired"
 }
 
 function pairRequestedByPeer(device) {
@@ -59,14 +102,10 @@ function typeIcon(type) {
 
 // --- status (`kcd status --json`) ---
 function parseStatusJson(raw) {
-  var text = String(raw || "").trim()
-  if (text === "") return { ok: false, error: "empty status output" }
-  var parsed = null
-  try {
-    parsed = JSON.parse(text)
-  } catch (e) {
-    return { ok: false, error: "status: invalid JSON" }
-  }
+  var r = safeParseJson(raw, 64)
+  if (r.empty) return { ok: false, error: "empty status output" }
+  if (r.malformed) return { ok: false, error: "status: invalid JSON" }
+  var parsed = r.value
   return {
     ok: true,
     version: String(parsed.version || ""),
@@ -89,14 +128,11 @@ function parseDoctorLine(line) {
 // Envelope: {type, timestamp, deviceId, payload}. Returns null for blank lines;
 // {malformed:true} for unparseable lines so the caller can ignore them safely.
 function parseWatchLine(line) {
-  var text = String(line || "").trim()
-  if (text === "") return null
-  var parsed = null
-  try {
-    parsed = JSON.parse(text)
-  } catch (e) {
-    return { malformed: true }
-  }
+  var raw = String(line || "").trim()
+  if (raw === "") return null
+  var r = safeParseJson(raw, 64)
+  if (r.malformed || r.empty) return { malformed: true }
+  var parsed = r.value
   if (!parsed || typeof parsed.type !== "string") return { malformed: true }
   return {
     type: parsed.type,
@@ -121,14 +157,9 @@ function num(payload, key, fallback) {
 // --- mpris (`kcd mpris status --json`) ---
 // Array of player states; first entry carrying a title wins, else null.
 function parseMprisStatus(raw) {
-  var text = String(raw || "").trim()
-  if (text === "") return null
-  var parsed = null
-  try {
-    parsed = JSON.parse(text)
-  } catch (e) {
-    return null
-  }
+  var r = safeParseJson(raw, 64)
+  if (r.empty || r.malformed) return null
+  var parsed = r.value
   if (!parsed || typeof parsed.length !== "number") return null
   for (var i = 0; i < parsed.length; i++) {
     var p = parsed[i] || {}

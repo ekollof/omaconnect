@@ -26,6 +26,7 @@ Design (all data paths are anonymous):
 """
 import os
 import selectors
+import shutil
 import signal
 import subprocess
 import sys
@@ -61,8 +62,14 @@ def spawn(cmd):
     """Start cmd with stdout/stderr on fresh anonymous pipes.
 
     Returns (Popen, out_fd, err_fd_or_None). The producer leads its own
-    process group for whole-tree kill/reap.
+    process group for whole-tree kill/reap. The executable is resolved to
+    an absolute path first: a bare name would follow PATH, which a
+    same-UID process could influence.
     """
+    resolved = shutil.which(cmd[0])
+    if resolved is None:
+        raise FileNotFoundError(cmd[0])
+    cmd = [resolved] + list(cmd[1:])
     out_r, out_w = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
     err_r, err_w = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
     try:
@@ -250,7 +257,8 @@ def watch_mode(cap, cmd):
                 if not data:
                     try:
                         sel.unregister(key.fd)
-                    except Exception:
+                    except (ValueError, KeyError, OSError):
+                        # Already unregistered/closed by an earlier pass.
                         pass
                     try:
                         os.close(key.fd)
@@ -328,9 +336,13 @@ def main(argv):
     if not cmd:
         return usage()
     install_handlers()
-    if mode == "run":
-        return run_mode(cap, cmd)
-    return watch_mode(cap, cmd)
+    try:
+        if mode == "run":
+            return run_mode(cap, cmd)
+        return watch_mode(cap, cmd)
+    except FileNotFoundError as exc:
+        sys.stderr.write("omaconnect-exec: command not found: %s\n" % exc)
+        return 127
 
 
 if __name__ == "__main__":

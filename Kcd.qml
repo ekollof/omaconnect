@@ -328,8 +328,12 @@ Item {
       refreshDevices()
       break
     case "battery.update":
+      // Only track devices we know: the id becomes an object key, and only
+      // protocol-shaped IDs are safe keys (see Model.isDeviceId).
+      var known = deviceById(event.deviceId)
+      if (!known) break
       var all = Object.assign({}, batteries)
-      all[String(event.deviceId)] = {
+      all[known.id] = {
         charge: Model.num(payload, "charge", 0),
         charging: payload.charging === true
       }

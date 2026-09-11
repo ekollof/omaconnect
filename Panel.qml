@@ -54,15 +54,21 @@ Panel {
   property bool smsExpanded: false
   property var replyDrafts: ({})
 
+  // Drafts are keyed by phone-supplied reply IDs; the "r:" prefix keeps a
+  // crafted id (e.g. "__proto__") from touching Object.prototype.
+  function draftKey(replyId) {
+    return "r:" + String(replyId || "")
+  }
+
   function setReplyDraft(replyId, text) {
     var next = Object.assign({}, replyDrafts)
-    next[String(replyId)] = text
+    next[draftKey(replyId)] = text
     replyDrafts = next
   }
 
   function sendReply(entry) {
     if (!entry) return
-    kcd.replyTo(entry.deviceId, entry.replyId, replyDrafts[String(entry.replyId)] || "")
+    kcd.replyTo(entry.deviceId, entry.replyId, replyDrafts[draftKey(entry.replyId)] || "")
     setReplyDraft(entry.replyId, "")
   }
 
@@ -337,7 +343,7 @@ Panel {
                   foreground: root.bar.foreground
                   font.family: root.bar.fontFamily
                   placeholderText: "Reply…"
-                  text: root.replyDrafts[String(entry.replyId)] || ""
+                  text: root.replyDrafts[root.draftKey(entry.replyId)] || ""
                   onTextChanged: root.setReplyDraft(entry.replyId, text)
                   onAccepted: root.sendReply(entry)
                 }
