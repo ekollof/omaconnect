@@ -88,10 +88,12 @@ def kill_group(proc):
 
 
 def reap(proc):
-    """Wait for the producer; -1 if it is already gone."""
+    """Wait for the producer; -1 if it is already gone. Catches BaseException
+    (not just Exception) so a second signal landing inside teardown still
+    unwinds instead of tracebacking."""
     try:
         return proc.wait()
-    except Exception:
+    except BaseException:
         return -1
 
 
