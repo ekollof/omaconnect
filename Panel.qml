@@ -543,7 +543,7 @@ Panel {
           TextField {
             width: parent.width
             foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
+            font.family: root.bar.fontFamily
             placeholderText: "Phone number or name…"
             text: root.smsNumber
             onTextChanged: root.smsNumber = text
