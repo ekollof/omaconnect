@@ -26,13 +26,27 @@ Design (all data paths are anonymous):
 """
 import os
 import selectors
+import signal
 import subprocess
 import sys
 import time
-
 RUN_TIMEOUT_SECS = 120
 WATCH_MAX_CONSECUTIVE_DROPS = 100
 CHUNK = 65536
+
+
+class _Terminate(BaseException):
+    """Raised by the SIGTERM/SIGINT handler so blocking reads/selects
+    unwind through the normal cleanup path (group kill + reap)."""
+
+
+def _handle_term(signum, _frame):
+    raise _Terminate()
+
+
+def install_handlers():
+    signal.signal(signal.SIGTERM, _handle_term)
+    signal.signal(signal.SIGINT, _handle_term)
 
 
 def usage():
@@ -104,94 +118,111 @@ def run_mode(cap, cmd):
     live = {"out", "err"}
     deadline = time.monotonic() + RUN_TIMEOUT_SECS
     timed_out = False
-    while live:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            timed_out = True
-            break
-        for key, _mask in sel.select(timeout=remaining):
-            name = key.data
-            try:
-                data = os.read(key.fd, CHUNK)
-            except (BlockingIOError, InterruptedError):
-                continue
-            except OSError:
-                data = b""
-            if not data:
-                sel.unregister(key.fd)
-                os.close(key.fd)
-                live.discard(name)
-                continue
-            if name == "out":
-                if out_len + len(data) > cap + 1:
-                    overflow = True
+    result = 1
+    try:
+        while live:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            for key, _mask in sel.select(timeout=remaining):
+                name = key.data
+                try:
+                    data = os.read(key.fd, CHUNK)
+                except (BlockingIOError, InterruptedError):
+                    continue
+                except OSError:
+                    data = b""
+                if not data:
+                    sel.unregister(key.fd)
+                    os.close(key.fd)
+                    live.discard(name)
+                    continue
+                if name == "out":
+                    if out_len + len(data) > cap + 1:
+                        overflow = True
+                    else:
+                        out_parts.append(data)
+                        out_len += len(data)
                 else:
-                    out_parts.append(data)
-                    out_len += len(data)
-            else:
-                if err_len + len(data) > cap + 1:
-                    overflow = True
-                else:
-                    err_parts.append(data)
-                    err_len += len(data)
+                    if err_len + len(data) > cap + 1:
+                        overflow = True
+                    else:
+                        err_parts.append(data)
+                        err_len += len(data)
+                if overflow:
+                    break
             if overflow:
                 break
-        if overflow:
-            break
-    if timed_out:
+        if timed_out:
+            sys.stderr.write("omaconnect-exec: producer timed out\n")
+            result = 124
+        elif overflow:
+            sys.stderr.write(
+                "omaconnect-exec: one-shot output exceeded %d bytes, "
+                "dropped\n" % cap
+            )
+            result = 3
+        else:
+            try:
+                # Pipes are at EOF: the producer closed its ends and should
+                # exit imminently. Short grace only — fail closed.
+                result = norm_code(proc.wait(timeout=5))
+            except subprocess.TimeoutExpired:
+                sys.stderr.write("omaconnect-exec: producer lingered\n")
+                result = 124
+            if out_len > cap or err_len > cap:
+                # Raced past the cap between the last check and EOF.
+                sys.stderr.write(
+                    "omaconnect-exec: one-shot output exceeded %d "
+                    "bytes, dropped\n" % cap
+                )
+                result = 3
+            else:
+                # Emit on ANY exit code: QML reads stderr text to
+                # report failures (only overflow/timeout suppress).
+                if out_parts:
+                    sys.stdout.buffer.write(b"".join(out_parts))
+                    sys.stdout.buffer.flush()
+                if err_parts:
+                    sys.stderr.buffer.write(b"".join(err_parts))
+                    sys.stderr.flush()
+    except _Terminate:
+        result = 143
+    except BrokenPipeError:
+        # Downstream (QML) went away first: teardown, quietly.
+        result = 0
+    finally:
+        # Idempotent: killing an already-dead group is a no-op, and reap
+        # always runs, so no descendant survives us and no child zombies.
         kill_group(proc)
         reap(proc)
-        sys.stderr.write("omaconnect-exec: producer timed out\n")
-        return 124
-    if overflow:
-        kill_group(proc)
-        reap(proc)
-        sys.stderr.write(
-            "omaconnect-exec: one-shot output exceeded %d bytes, "
-            "dropped\n" % cap
-        )
-        return 3
-    try:
-        # Pipes are at EOF: the producer closed its ends and should exit
-        # imminently. Short grace only — a lingerer is abnormal, fail closed.
-        rc = proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        kill_group(proc)
-        reap(proc)
-        sys.stderr.write("omaconnect-exec: producer lingered\n")
-        return 124
-    rc = norm_code(rc)
-    if out_len > cap or err_len > cap:
-        # Raced past the cap between the last check and EOF.
-        sys.stderr.write(
-            "omaconnect-exec: one-shot output exceeded %d bytes, "
-            "dropped\n" % cap
-        )
-        return 3
-    if out_parts:
-        sys.stdout.buffer.write(b"".join(out_parts))
-        sys.stdout.buffer.flush()
-    if err_parts:
-        sys.stderr.buffer.write(b"".join(err_parts))
-        sys.stderr.flush()
-    return rc
+    return result
 
 
 def watch_mode(cap, cmd):
-    proc, out_r, _err_r = spawn(cmd)
-    os.close(_err_r)  # watch producers must not chatter on our stderr
-    # Blocking reads: the O_NONBLOCK flag from spawn() would turn this loop
-    # into a hot spin on idle streams.
-    os.set_blocking(out_r, True)
+    proc, out_r, err_r = spawn(cmd)
+    # Both streams stay open and multiplexed: producer stderr is drained and
+    # dropped (never forwarded) so a chatty/flooding stderr can neither
+    # SIGPIPE the producer nor wedge the loop. Nonblocking + selector keeps
+    # idle streams at zero CPU without ever blocking unboundedly.
+    sel = selectors.DefaultSelector()
+    sel.register(out_r, selectors.EVENT_READ, "out")
+    sel.register(err_r, selectors.EVENT_READ, "err")
+    live = {"out", "err"}
     buf = bytearray()
     drops = 0
     # True once the in-progress record has exceeded the cap: its content is
     # doomed, but the boundary must still be located to resync framing.
     tainted = False
+    result = 0
 
     def note(msg):
-        sys.stderr.write("omaconnect-exec: %s\n" % msg)
-        sys.stderr.flush()
+        try:
+            sys.stderr.write("omaconnect-exec: %s\n" % msg)
+            sys.stderr.flush()
+        except OSError:
+            pass
 
     def emit_record(rec):
         sys.stdout.buffer.write(bytes(rec) + b"\n")
@@ -202,62 +233,81 @@ def watch_mode(cap, cmd):
         nonlocal drops
         drops += 1
         note("dropped overlong record (>%d bytes)" % cap)
-        if drops > WATCH_MAX_CONSECUTIVE_DROPS:
-            note("too many overlong records, stopping")
-            kill_group(proc)
-            reap(proc)
-            return True
-        return False
+        return drops > WATCH_MAX_CONSECUTIVE_DROPS
 
-    rc = 0
     try:
-        while True:
-            try:
-                data = os.read(out_r, CHUNK)
-            except (BlockingIOError, InterruptedError):
-                continue
-            except OSError:
-                data = b""
-            if not data:
-                break  # EOF
-            buf += data
-            # Never hold more than one cap past the boundary search: trim
-            # boundary-free excess as it arrives (content already doomed).
-            while True:
-                nl = buf.find(b"\n")
-                if nl < 0:
-                    if len(buf) > cap:
-                        if not tainted:
-                            tainted = True
-                            if drop_overlong():
-                                return 3
-                        if cap > 0:
-                            del buf[:-cap]
-                        else:
-                            del buf[:]
-                    break
-                rec = bytes(buf[:nl])
-                del buf[: nl + 1]
-                if tainted:
-                    # Already counted when the cap was crossed; a
-                    # boundary-free buf can never complete untainted
-                    # over the cap (trimmed above), so no second count.
-                    tainted = False
+        while live:
+            for key, _mask in sel.select():
+                name = key.data
+                try:
+                    data = os.read(key.fd, CHUNK)
+                except (BlockingIOError, InterruptedError):
                     continue
-                emit_record(rec)
-                drops = 0
+                except OSError:
+                    data = b""
+                if not data:
+                    try:
+                        sel.unregister(key.fd)
+                    except Exception:
+                        pass
+                    try:
+                        os.close(key.fd)
+                    except OSError:
+                        pass
+                    live.discard(name)
+                    continue
+                if name == "err":
+                    continue  # drained and dropped, see above
+                buf += data
+                # Never hold more than one cap past the boundary search:
+                # trim boundary-free excess as it arrives (doomed anyway).
+                while True:
+                    nl = buf.find(b"\n")
+                    if nl < 0:
+                        if len(buf) > cap:
+                            if not tainted:
+                                tainted = True
+                                if drop_overlong():
+                                    note("too many overlong records, "
+                                         "stopping")
+                                    result = 3
+                                    raise _Terminate()
+                            if cap > 0:
+                                del buf[:-cap]
+                            else:
+                                del buf[:]
+                        break
+                    rec = bytes(buf[:nl])
+                    del buf[: nl + 1]
+                    if tainted:
+                        # Already counted when the cap was crossed; a
+                        # boundary-free buf can never complete untainted
+                        # over the cap (trimmed above), so no second count.
+                        tainted = False
+                        continue
+                    emit_record(rec)
+                    drops = 0
+        # Flush an unterminated tail as a final record.
+        if buf:
+            if tainted or len(buf) > cap:
+                note("dropped overlong record (>%d bytes)" % cap)
+            else:
+                emit_record(bytes(buf))
+    except _Terminate:
+        # Signal, drop-limit stop, or our own raise above: result already set
+        # where applicable; default is termination.
+        if result == 0:
+            result = 143
+    except BrokenPipeError:
+        # Downstream (QML) went away first: teardown, quietly.
+        result = 0
     finally:
-        try:
-            os.close(out_r)
-        except OSError:
-            pass
-    # Flush an unterminated tail as a final record.
-    if buf:
-        if tainted or len(buf) > cap:
-            note("dropped overlong record (>%d bytes)" % cap)
-        else:
-            emit_record(bytes(buf))
-    return norm_code(reap(proc))
+        # Idempotent whole-tree cleanup on every path — normal EOF, overflow
+        # stop, signals, downstream loss, exceptions: the private producer
+        # group is killed when live and the direct child always reaped.
+        kill_group(proc)
+        reap(proc)
+    return result
 
 
 def main(argv):
@@ -275,6 +325,7 @@ def main(argv):
     cmd = argv[3:]
     if not cmd:
         return usage()
+    install_handlers()
     if mode == "run":
         return run_mode(cap, cmd)
     return watch_mode(cap, cmd)
