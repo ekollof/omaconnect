@@ -10,6 +10,10 @@ exhaust the shared shell process before Model.js ever parses a byte.
     omaconnect-exec watch <max-line-bytes> -- cmd...   stream: records longer
         than the cap are dropped (stderr note); >100 consecutive drops kills
         the producer group and exits 3.
+    omaconnect-exec exec -- cmd...    resolve cmd through the trusted
+        directory allowlist and replace this process with it (no framing,
+        no return). For fire-and-forget invocations that still need trusted
+        resolution and a controlled environment.
 
 Exit codes: the producer's code on success; 3 on any limit breach; 124 on
 producer timeout (run mode, 120s); 2 on misuse.
@@ -26,14 +30,74 @@ Design (all data paths are anonymous):
 """
 import os
 import selectors
-import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
 RUN_TIMEOUT_SECS = 120
 WATCH_MAX_CONSECUTIVE_DROPS = 100
+WATCH_LIVENESS_SECS = 5.0
 CHUNK = 65536
+
+# Executables may only come from these directories, must be root-owned
+# regular files, and must not be group/world-writable. Ambient PATH is never
+# consulted: the same UID could otherwise shadow a name, and resolving now
+# but executing later would leave a replacement race. /bin is kept for
+# completeness (on Arch it is a symlink to /usr/bin).
+TRUSTED_DIRS = ("/usr/bin", "/bin")
+
+# Environment passed to producers: an explicit allowlist plus deterministic
+# locale and PATH. Everything else (LD_PRELOAD, BASH_ENV, TMPDIR, …) is
+# dropped. The kept entries are the ones kcd/standard tools need to locate
+# the daemon socket, session bus, and config; none of them are influenced
+# by phone-controlled data.
+SAFE_ENV_KEEP = (
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "XDG_RUNTIME_DIR",
+    "XDG_CONFIG_HOME",
+    "XDG_SESSION_TYPE",
+    "XDG_CURRENT_DESKTOP",
+    "WAYLAND_DISPLAY",
+    "DISPLAY",
+    "DBUS_SESSION_BUS_ADDRESS",
+)
+
+
+def build_env():
+    env = {"LC_ALL": "C", "PATH": "/usr/bin:/bin"}
+    for key in SAFE_ENV_KEEP:
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    return env
+
+
+def resolve_prog(name):
+    """Resolve a bare program name to a verified absolute path.
+
+    Rejects slashes (callers pass bare names only), non-regular files,
+    group/world-writable files, and non-root owners. Raises
+    FileNotFoundError when nothing trustworthy matches.
+    """
+    if not name or "/" in name:
+        raise FileNotFoundError(name)
+    for directory in TRUSTED_DIRS:
+        path = os.path.join(directory, name)
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            continue
+        if st.st_mode & 0o022:
+            continue
+        if st.st_uid != 0:
+            continue
+        return path
+    raise FileNotFoundError(name)
 
 
 class _Terminate(BaseException):
@@ -61,25 +125,25 @@ def usage():
 def spawn(cmd):
     """Start cmd with stdout/stderr on fresh anonymous pipes.
 
-    Returns (Popen, out_fd, err_fd_or_None). The producer leads its own
-    process group for whole-tree kill/reap. The executable is resolved to
-    an absolute path first: a bare name would follow PATH, which a
-    same-UID process could influence.
+    Returns (Popen, out_fd, err_fd). The executable is resolved through
+    resolve_prog() (no ambient PATH, no lookup-to-exec gap: verification
+    and exec happen back-to-back on a root-owned non-writable file), the
+    environment is the controlled build_env(), and the producer leads its
+    own process group for whole-tree kill/reap.
     """
-    resolved = shutil.which(cmd[0])
-    if resolved is None:
-        raise FileNotFoundError(cmd[0])
-    cmd = [resolved] + list(cmd[1:])
+    resolved = resolve_prog(cmd[0])
+    full_cmd = [resolved] + list(cmd[1:])
     out_r, out_w = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
     err_r, err_w = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
     try:
         proc = subprocess.Popen(
-            cmd,
+            full_cmd,
             stdin=subprocess.DEVNULL,
             stdout=out_w,
             stderr=err_w,
             start_new_session=True,
             close_fds=True,
+            env=build_env(),
         )
     finally:
         os.close(out_w)
@@ -87,11 +151,37 @@ def spawn(cmd):
     return proc, out_r, err_r
 
 
+def exec_mode(cmd):
+    """Resolve and replace this process with cmd (no framing, no return).
+
+    For fire-and-forget invocations from QML so they get the same trusted
+    resolution and controlled environment without a supervisory layer that
+    would only add lifetime confusion. Never returns on success.
+    """
+    resolved = resolve_prog(cmd[0])
+    os.execve(resolved, [resolved] + list(cmd[1:]), build_env())
+
+
 def kill_group(proc):
     try:
         os.killpg(proc.pid, 9)
     except (ProcessLookupError, PermissionError, OSError):
         pass
+
+
+def check_liveness(proc):
+    """If the leader is gone, kill/reap its whole group and report True.
+
+    Called on every loop pass (including selector timeouts) so a descendant
+    holding pipes open can never wedge us past the leader's death: once the
+    group is gone the remaining buffered bytes drain to EOF on their own.
+    Idempotent.
+    """
+    if proc.poll() is None:
+        return False
+    kill_group(proc)
+    reap(proc)
+    return True
 
 
 def reap(proc):
@@ -130,6 +220,11 @@ def run_mode(cap, cmd):
     result = 1
     try:
         while live:
+            # Liveness: if the leader is gone, its group was just reaped
+            # wholesale, so any holder keeping these pipes open is dead and
+            # EOF follows on its own. Never break here: breaking would
+            # discard the trailing output of clean exits.
+            check_liveness(proc)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True
@@ -245,8 +340,13 @@ def watch_mode(cap, cmd):
         return drops > WATCH_MAX_CONSECUTIVE_DROPS
 
     try:
+        # Bounded selector timeout (not indefinite): every pass — data or
+        # timeout — runs the liveness probe below, so a dead leader with a
+        # lingering pipe holder can never wedge the loop. No idle deadline:
+        # an idle-but-connected watch stream is healthy by definition.
         while live:
-            for key, _mask in sel.select():
+            check_liveness(proc)
+            for key, _mask in sel.select(timeout=WATCH_LIVENESS_SECS):
                 name = key.data
                 try:
                     data = os.read(key.fd, CHUNK)
@@ -321,6 +421,21 @@ def watch_mode(cap, cmd):
 
 
 def main(argv):
+    if len(argv) < 3:
+        return usage()
+    if argv[0] == "exec":
+        if len(argv) < 4 or argv[1] != "--":
+            return usage()
+        cmd = argv[2:]
+        if not cmd:
+            return usage()
+        install_handlers()
+        try:
+            exec_mode(cmd)
+        except (FileNotFoundError, OSError) as exc:
+            sys.stderr.write("omaconnect-exec: cannot exec %s: %s\n" % (cmd[0], exc))
+            return 127
+        return 127  # unreachable; exec replaces the process on success
     if len(argv) < 4:
         return usage()
     mode, cap_s = argv[0], argv[1]

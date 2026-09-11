@@ -258,9 +258,10 @@ Item {
 
   function enableDaemon() {
     // Explicit user gesture only — the plugin never enables the service itself.
+    // Resolved through the helper like every other invocation (no ambient PATH).
     lastError = ""
     actionStatus = "Starting kcd…"
-    Quickshell.execDetached(["systemctl", "--user", "enable", "--now", "kcd"])
+    Quickshell.execDetached([helperBin, "exec", "--", "systemctl", "--user", "enable", "--now", "kcd"])
     enableWait.restart()
   }
 
@@ -292,14 +293,14 @@ Item {
   function notify(title, body) {
     var t = String(title || "OMAConnect")
     var b = String(body || "")
-    if (b === "") Quickshell.execDetached(["notify-send", t])
-    else Quickshell.execDetached(["notify-send", t, b])
+    if (b === "") Quickshell.execDetached([helperBin, "exec", "--", "notify-send", t])
+    else Quickshell.execDetached([helperBin, "exec", "--", "notify-send", t, b])
   }
 
   function dismissToastBySummary(summary) {
     var needle = String(summary || "")
     if (needle === "") return
-    Quickshell.execDetached(["qs", "-c", "omarchy", "ipc", "call", "notifications", "dismiss", needle])
+    Quickshell.execDetached([helperBin, "exec", "--", "qs", "-c", "omarchy", "ipc", "call", "notifications", "dismiss", needle])
   }
 
   // ---------- watch stream ----------
@@ -421,6 +422,8 @@ Item {
   Process {
     id: statusProc
     running: false
+    command: [helperBin, "run", String(runCap), "--", "kcd", "status", "--json"]
+    property string _statusError: ""
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -440,38 +443,23 @@ Item {
         root.refreshing = false
       }
     }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root._statusError = text
+    }
     onExited: function(code) {
       // Nonzero exit (or empty output handled above) means the daemon socket
-      // is unreachable. Exit 127-class failures mean kcd itself is gone.
-      if (code !== 0 && root.daemonState === "checking") {
-        root.daemonState = "down"
-        root.refreshing = false
-      } else if (code !== 0) {
-        root.daemonState = "down"
-        root.refreshing = false
-      }
-    }
-    Component.onCompleted: {
-      // Probe the binary first so "not installed" and "daemon stopped" get
-      // different, actionable messages.
-      whichProc.running = true
-    }
-  }
-
-  Process {
-    id: whichProc
-    command: ["bash", "-c", "command -v kcd"]
-    running: false
-    onExited: function(code) {
-      if (code !== 0) {
+      // is unreachable. Exit 127 with the helper's "command not found" on
+      // stderr means kcd itself failed trusted resolution (not installed or
+      // untrusted binary) — surfaced as "missing" so the panel shows the
+      // install hint instead of the start button.
+      if (code === 127 && String(statusProc._statusError || "").indexOf("command not found") >= 0) {
         root.kcdInstalled = false
         root.daemonState = "missing"
-        root.refreshing = false
-        return
+      } else if (code !== 0) {
+        root.daemonState = "down"
       }
-      root.kcdInstalled = true
-      statusProc.command = [root.helperBin, "run", String(root.runCap), "--", "kcd", "status", "--json"]
-      statusProc.running = true
+      root.refreshing = false
     }
   }
 
@@ -568,7 +556,7 @@ Item {
             root.actionStatus = "Mounted at " + mountPath
             // Open the mount in the default file manager (xdg-open resolves
             // to Nautilus/Thunar/… per the user's defaults).
-            Quickshell.execDetached(["xdg-open", mountPath])
+            Quickshell.execDetached([root.helperBin, "exec", "--", "xdg-open", mountPath])
           } else {
             root.actionStatus = out !== "" ? out.slice(0, 300) : "Mounted"
           }
