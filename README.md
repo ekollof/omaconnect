@@ -127,6 +127,9 @@ sudo ufw reload
 
 (`kcd-bin` ships the profile; it just isn't enabled automatically.)
 
+**Phone refuses to send a file**: the Android app rejects 0-byte files
+client-side. Test with a real (non-empty) file.
+
 ## Notification icons (kcd + quickshell quirks)
 
 Two gaps, both worked around outside Omarchy core. **Everything here is
