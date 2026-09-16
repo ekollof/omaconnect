@@ -520,7 +520,7 @@ Item {
     }
     stderr: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root._statusError = text
+      onStreamFinished: statusProc._statusError = text
     }
     onExited: function(code) {
       // Nonzero exit (or empty output handled above) means the daemon socket
