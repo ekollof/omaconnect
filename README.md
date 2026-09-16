@@ -90,7 +90,9 @@ rm -rf ~/.config/kcd ~/.config/systemd/user/kcd.service.d
   with search; tapping a number fills the SMS composer. Sync progress
   arrives as `contacts.updated` events and refreshes the list automatically.
   Older daemons keep the manual number-entry behaviour (SMS shows a
-  "needs kcd 1.18+" hint, no contacts section).
+  "needs kcd 1.18+" hint, no contacts section). Support is probed via the
+  `contacts` subcommand itself, not the daemon version string — release
+  builds report `version: "dev"` in `status --json`.
 - **Phone media (MPRIS)**: now-playing title/artist with play/pause toggle,
   previous/next. Shows "No media playing" when the phone is quiet.
 - **Clipboard push**: per-device "Clip" button sends the desktop clipboard

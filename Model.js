@@ -215,6 +215,16 @@ function supportsContacts(raw) {
   return versionAtLeast(raw, 1, 18)
 }
 
+// Definitive missing-subcommand answers: pre-1.18 daemons have no
+// `contacts` tree, so urfave/cli reports "No help topic" (exit non-zero).
+// Only these exact shapes mark the daemon as contacts-incapable; any other
+// failure stays transient so a later Refresh can still succeed.
+function isContactsUnsupportedError(stdoutText, stderrText) {
+  var hay = (String(stdoutText || "") + "\n" + String(stderrText || "")).toLowerCase()
+  return hay.indexOf("no help topic") >= 0
+    || hay.indexOf("unknown command") >= 0
+    || hay.indexOf("unknown subcommand") >= 0
+}
 // --- contacts (`kcd contacts list <id> --json`) ---
 // Shape per ContactSummary: {uid, name, phones[], emails[], timestamp}.
 // Empty stdout with the "No cached contacts" hint means zero contacts, not

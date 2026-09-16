@@ -32,10 +32,17 @@ Item {
   // Phone now-playing state: {player, title, artist, album, isPlaying} or null.
   property var nowPlaying: null
   // Cached phone address book (kcd >= 1.18): {uid, name, phones[], emails[]}.
+  // Support is capability-probed, not version-gated: release builds report
+  // `version: "dev"` in `status --json`, so a version check alone would
+  // never match. contactsUnsupported flips true only on a definitive
+  // missing-subcommand answer (or a parseable version below 1.18).
   property var contacts: []
   property bool contactsBusy: false
   property bool contactsEmptyHint: false
   property bool contactsLoaded: false
+  property bool contactsProbed: false
+  property bool contactsUnsupported: false
+  property bool contactsAvailable: false
   // Pending outbound pair requests we initiated (deviceId -> true) so the
   // panel can show "Pair requested…" instead of flipping back to Unpaired.
   property var pendingPairs: ({})
@@ -128,8 +135,9 @@ Item {
   }
 
   // kcd 1.18 added `contacts list --json`; older daemons keep the manual
-  // number-entry behaviour (no contacts UI, no probing).
-  readonly property bool contactsSupported: Model.supportsContacts(daemonVersion)
+  // number-entry behaviour (no contacts UI, no probing). Optimistic until
+  // proven otherwise so "dev"-versioned 1.18+ builds work out of the box.
+  readonly property bool contactsSupported: !contactsUnsupported
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -269,7 +277,7 @@ Item {
   }
 
   function contactsSync(id) {
-    if (!contactsSupported) {
+    if (contactsUnsupported) {
       lastError = "Contacts need kcd 1.18 or newer"
       return
     }
@@ -277,12 +285,13 @@ Item {
   }
 
   function contactsList(id) {
-    if (!contactsSupported) return
+    if (contactsUnsupported) return
     if (actionProc.running) {
       lastError = "Another action is still running"
       return
     }
     contactsBusy = true
+    contactsProbed = true
     _pendingAction = "contacts-list"
     _pendingDeviceId = String(id || "")
     _pendingReplyId = ""
@@ -317,6 +326,7 @@ Item {
     return JSON.stringify({
       daemon: daemonState, installed: kcdInstalled, version: daemonVersion,
       contactsSupported: contactsSupported, contacts: (contacts || []).length,
+      contactsProbed: contactsProbed, contactsAvailable: contactsAvailable,
       devices: devs, batteries: bats,
       primary: primaryDevice ? String(primaryDevice.id) : null,
       browseDir: browseDir, browseCount: (browseEntries || []).length,
@@ -400,7 +410,7 @@ Item {
       break
     case "contacts.updated":
       // Sync round made progress; the vCards phase means the cache changed.
-      if (!contactsSupported || actionProc.running) break
+      if (root.contactsUnsupported || actionProc.running) break
       if (String(payload.phase || "") === "vcards" && primaryDevice) {
         contactsList(primaryDevice.id)
       }
@@ -484,12 +494,22 @@ Item {
       onStreamFinished: {
         var parsed = Model.parseStatusJson(text)
         if (parsed.ok) {
+          // Daemon (re)start resets the capability probe so an upgraded
+          // daemon is re-detected without a shell restart.
+          if (root.daemonState !== "up") root.contactsProbed = false
           root.daemonState = "up"
           root.kcdInstalled = true
           root.daemonVersion = parsed.version
           root.daemonUptime = parsed.uptimeHuman
           root.deviceCount = parsed.deviceCount
           root.connectedCount = parsed.connectedCount
+          // Parseable versions below 1.18 skip the probe outright; 1.18+
+          // and "dev" builds (all current releases) go through the
+          // capability probe, which also performs the first list load.
+          if (Model.parseVersion(parsed.version)
+              && !Model.supportsContacts(parsed.version)) {
+            root.contactsUnsupported = true
+          }
           root.refreshDevices()
           if (!watchProc.running) watchProc.running = true
         } else {
@@ -539,10 +559,10 @@ Item {
         root.daemonState = "down"
         return
       }
-      // Opportunistic contacts load: cheap cached read, once per shell
-      // lifetime (manual Refresh re-lists). Guarded by contactsLoaded so an
+      // Opportunistic contacts probe: cheap cached read, once per daemon
+      // lifetime (manual Refresh re-lists). Guarded by contactsProbed so an
       // empty address book can't loop via refreshDevices.
-      if (root.contactsSupported && !root.contactsLoaded && !actionProc.running && !root.contactsBusy
+      if (!root.contactsUnsupported && !root.contactsProbed && !actionProc.running && !root.contactsBusy
           && root.primaryDevice) {
         root.contactsList(root.primaryDevice.id)
       }
@@ -647,6 +667,8 @@ Item {
           if (parsed.ok) {
             root.contacts = parsed.contacts
             root.contactsEmptyHint = !!parsed.empty
+            root.contactsUnsupported = false
+            root.contactsAvailable = true
             root.actionStatus = parsed.contacts.length > 0
               ? String(parsed.contacts.length) + " contacts"
               : "No contacts cached — Sync first"
@@ -667,9 +689,11 @@ Item {
         if (tag === "contacts-list") {
           root.contactsBusy = false
           // Pre-1.18 daemons have no `contacts` subcommand: surface the
-          // hint once; the panel keeps manual number entry.
-          if (String(root.lastError).toLowerCase().indexOf("unknown") >= 0
-              || String(root._actionOutput || "").toLowerCase().indexOf("unknown") >= 0) {
+          // hint once and hide the contacts UI; the panel keeps manual
+          // number entry. Anything else stays transient (Refresh retries).
+          if (Model.isContactsUnsupportedError(root._actionOutput, root.lastError)) {
+            root.contactsUnsupported = true
+            root.contactsAvailable = false
             root.lastError = "Contacts need kcd 1.18 or newer"
           }
         }
