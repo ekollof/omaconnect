@@ -52,6 +52,8 @@ Panel {
   property string smsNumber: ""
   property string smsMessage: ""
   property bool smsExpanded: false
+  property bool contactsExpanded: false
+  property string contactSearch: ""
   property var replyDrafts: ({})
 
   // Drafts are keyed by phone-supplied reply IDs; the "r:" prefix keeps a
@@ -70,6 +72,31 @@ Panel {
     if (!entry) return
     kcd.replyTo(entry.deviceId, entry.replyId, replyDrafts[draftKey(entry.replyId)] || "")
     setReplyDraft(entry.replyId, "")
+  }
+
+  function dismissReply(entry) {
+    if (!entry) return
+    setReplyDraft(entry.replyId, "")
+    kcd.dismissReply(entry.replyId)
+  }
+
+  function clearAllReplies() {
+    replyDrafts = ({})
+    kcd.clearReplies()
+  }
+
+  // Contacts filtered by the search box (name or any phone/email).
+  function filteredContacts() {
+    var list = kcd.contacts || []
+    var needle = String(contactSearch || "").trim().toLowerCase()
+    if (needle === "") return list
+    var out = []
+    for (var i = 0; i < list.length; i++) {
+      var c = list[i] || {}
+      var hay = String(c.name || "") + " " + (c.phones || []).join(" ") + " " + (c.emails || []).join(" ")
+      if (hay.toLowerCase().indexOf(needle) >= 0) out.push(c)
+    }
+    return out.slice(0, 50)
   }
 
   visible: true
@@ -299,10 +326,23 @@ Panel {
 
           PanelSeparator { foreground: root.bar.foreground }
 
-          PanelSectionHeader {
-            text: "REPLY FROM DESKTOP"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            PanelSectionHeader {
+              width: parent.width - 84
+              anchors.verticalCenter: parent.verticalCenter
+              text: "REPLY FROM DESKTOP"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+            }
+            Button {
+              text: "Clear"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              onClicked: root.clearAllReplies()
+            }
           }
 
           Repeater {
@@ -339,7 +379,7 @@ Panel {
                 spacing: Style.space(8)
                 TextField {
                   id: replyField
-                  width: parent.width - 76
+                  width: parent.width - 152
                   foreground: root.bar.foreground
                   font.family: root.bar.fontFamily
                   placeholderText: "Reply…"
@@ -352,6 +392,12 @@ Panel {
                   foreground: root.bar.foreground
                   fontFamily: root.bar.fontFamily
                   onClicked: root.sendReply(entry)
+                }
+                Button {
+                  text: "Dismiss"
+                  foreground: root.bar.foreground
+                  fontFamily: root.bar.fontFamily
+                  onClicked: root.dismissReply(entry)
                 }
               }
             }
@@ -530,6 +576,98 @@ Panel {
           }
         }
 
+        // ---------- contacts (kcd >= 1.18; older daemons keep manual entry) ----------
+        CollapsibleSection {
+          width: parent.width
+          title: "CONTACTS"
+          foreground: root.bar.foreground
+          fontFamily: root.bar.fontFamily
+          visible: kcd.daemonState === "up" && kcd.primaryDevice !== null && kcd.contactsSupported
+          expanded: root.contactsExpanded
+          onToggled: {
+            root.contactsExpanded = !root.contactsExpanded
+            if (root.contactsExpanded && kcd.primaryDevice && !kcd.contactsLoaded && !kcd.contactsBusy) {
+              kcd.contactsList(kcd.primaryDevice.id)
+            }
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Button {
+              text: kcd.contactsBusy ? "Loading…" : "Refresh"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              onClicked: {
+                if (kcd.primaryDevice) kcd.contactsList(kcd.primaryDevice.id)
+              }
+            }
+            Button {
+              text: "Sync"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              onClicked: {
+                if (kcd.primaryDevice) kcd.contactsSync(kcd.primaryDevice.id)
+              }
+            }
+          }
+
+          TextField {
+            width: parent.width
+            foreground: root.bar.foreground
+            font.family: root.bar.fontFamily
+            placeholderText: "Search contacts…"
+            text: root.contactSearch
+            onTextChanged: root.contactSearch = text
+          }
+
+          Text {
+            visible: (kcd.contacts || []).length === 0 && !kcd.contactsBusy
+            width: parent.width
+            wrapMode: Text.WordWrap
+            color: Qt.darker(root.bar.foreground, 1.5)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            textFormat: Text.PlainText
+            text: "No contacts cached. Press Sync, approve on the phone, then Refresh."
+          }
+
+          Repeater {
+            model: root.filteredContacts()
+            delegate: Column {
+              required property var modelData
+              readonly property var contact: modelData
+              width: parent.width
+              spacing: Style.space(1)
+              Text {
+                width: parent.width
+                elide: Text.ElideRight
+                color: root.bar.foreground
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                textFormat: Text.PlainText
+                text: contact.name || "Unknown"
+              }
+              Repeater {
+                model: (contact.phones || []).slice(0, 3)
+                delegate: Button {
+                  required property var modelData
+                  required property int index
+                  leftAlign: true
+                  foreground: root.bar.foreground
+                  fontFamily: root.bar.fontFamily
+                  text: String(modelData || "")
+                  onClicked: {
+                    root.smsNumber = String(modelData || "")
+                    root.smsExpanded = true
+                  }
+                }
+              }
+            }
+          }
+        }
+
         // ---------- SMS ----------
         CollapsibleSection {
           width: parent.width
@@ -547,6 +685,16 @@ Panel {
             placeholderText: "Phone number"
             text: root.smsNumber
             onTextChanged: root.smsNumber = text
+          }
+          Text {
+            visible: !kcd.contactsSupported
+            width: parent.width
+            wrapMode: Text.WordWrap
+            color: Qt.darker(root.bar.foreground, 1.5)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            textFormat: Text.PlainText
+            text: "Contacts need kcd 1.18+ — enter the number manually."
           }
           Row {
             width: parent.width

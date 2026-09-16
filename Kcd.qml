@@ -31,6 +31,11 @@ Item {
   property var smsList: []
   // Phone now-playing state: {player, title, artist, album, isPlaying} or null.
   property var nowPlaying: null
+  // Cached phone address book (kcd >= 1.18): {uid, name, phones[], emails[]}.
+  property var contacts: []
+  property bool contactsBusy: false
+  property bool contactsEmptyHint: false
+  property bool contactsLoaded: false
   // Pending outbound pair requests we initiated (deviceId -> true) so the
   // panel can show "Pair requested…" instead of flipping back to Unpaired.
   property var pendingPairs: ({})
@@ -122,6 +127,10 @@ Item {
     return batteries[primaryDevice.id] || null
   }
 
+  // kcd 1.18 added `contacts list --json`; older daemons keep the manual
+  // number-entry behaviour (no contacts UI, no probing).
+  readonly property bool contactsSupported: Model.supportsContacts(daemonVersion)
+
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
     return value === undefined || value === null ? fallback : value
@@ -163,6 +172,7 @@ Item {
 
   property string _pendingAction: ""
   property string _pendingDeviceId: ""
+  property string _pendingReplyId: ""
   property string _actionOutput: ""
 
   function runAction(tag, deviceId, args) {
@@ -172,6 +182,7 @@ Item {
     }
     _pendingAction = tag
     _pendingDeviceId = String(deviceId || "")
+    if (tag !== "reply") _pendingReplyId = ""
     _actionOutput = ""
     lastError = ""
     actionStatus = ""
@@ -253,7 +264,33 @@ Item {
       lastError = "Reply is empty"
       return
     }
+    _pendingReplyId = String(replyId || "")
     runAction("reply", deviceId, ["reply", String(deviceId), String(replyId), msg])
+  }
+
+  function contactsSync(id) {
+    if (!contactsSupported) {
+      lastError = "Contacts need kcd 1.18 or newer"
+      return
+    }
+    runAction("contacts-sync", id, ["contacts", "sync", String(id)])
+  }
+
+  function contactsList(id) {
+    if (!contactsSupported) return
+    if (actionProc.running) {
+      lastError = "Another action is still running"
+      return
+    }
+    contactsBusy = true
+    _pendingAction = "contacts-list"
+    _pendingDeviceId = String(id || "")
+    _pendingReplyId = ""
+    _actionOutput = ""
+    lastError = ""
+    actionProc.command = [root.helperBin, "run", String(root.runCap), "--",
+      "kcd", "contacts", "list", String(id), "--json"]
+    actionProc.running = true
   }
 
   function enableDaemon() {
@@ -278,7 +315,8 @@ Item {
       bats[id] = { charge: batteries[id].charge, charging: batteries[id].charging === true }
     }
     return JSON.stringify({
-      daemon: daemonState, installed: kcdInstalled,
+      daemon: daemonState, installed: kcdInstalled, version: daemonVersion,
+      contactsSupported: contactsSupported, contacts: (contacts || []).length,
       devices: devs, batteries: bats,
       primary: primaryDevice ? String(primaryDevice.id) : null,
       browseDir: browseDir, browseCount: (browseEntries || []).length,
@@ -360,6 +398,13 @@ Item {
       // Phone dismissed it — nothing to keep offering a reply for.
       removeReplyable(Model.str(payload, "id", "", 128))
       break
+    case "contacts.updated":
+      // Sync round made progress; the vCards phase means the cache changed.
+      if (!contactsSupported || actionProc.running) break
+      if (String(payload.phase || "") === "vcards" && primaryDevice) {
+        contactsList(primaryDevice.id)
+      }
+      break
     case "share.complete":
       notify("File received", Model.str(payload, "file", "A file", 500) + " saved to phone downloads")
       break
@@ -415,6 +460,16 @@ Item {
     for (var i = 0; i < list.length; i++)
       if (String(list[i].replyId) !== String(replyId)) kept.push(list[i])
     replyable = kept
+  }
+
+  // User-dismissed: drop one reply card, or the whole list. The phone keeps
+  // its own copy; this only clears the desktop offer to reply.
+  function dismissReply(replyId) {
+    removeReplyable(replyId)
+  }
+
+  function clearReplies() {
+    replyable = []
   }
 
   // ---------- processes ----------
@@ -480,7 +535,17 @@ Item {
       }
     }
     onExited: function(code) {
-      if (code !== 0) root.daemonState = "down"
+      if (code !== 0) {
+        root.daemonState = "down"
+        return
+      }
+      // Opportunistic contacts load: cheap cached read, once per shell
+      // lifetime (manual Refresh re-lists). Guarded by contactsLoaded so an
+      // empty address book can't loop via refreshDevices.
+      if (root.contactsSupported && !root.contactsLoaded && !actionProc.running && !root.contactsBusy
+          && root.primaryDevice) {
+        root.contactsList(root.primaryDevice.id)
+      }
     }
   }
 
@@ -509,7 +574,7 @@ Item {
       "pair.requested,pair.accepted,pair.rejected," +
       "battery.update,notification,notification.canceled," +
       "share.complete,share.url,share.text,telephony.ringing,telephony.missed," +
-      "sftp.mount,sms.incoming,sms.attachment,mpris.update"]
+      "sftp.mount,sms.incoming,sms.attachment,mpris.update,contacts.updated"]
     running: false
     stdout: SplitParser {
       onRead: function(data) { root.handleWatchLine(data) }
@@ -538,8 +603,10 @@ Item {
     onExited: function(code) {
       var tag = root._pendingAction
       var devId = root._pendingDeviceId
+      var replyId = root._pendingReplyId
       root._pendingAction = ""
       root._pendingDeviceId = ""
+      root._pendingReplyId = ""
       if (code === 0) {
         root.lastError = ""
         var out = String(root._actionOutput || "").trim()
@@ -569,13 +636,27 @@ Item {
         else if (tag === "clipboard") root.actionStatus = "Clipboard pushed to phone"
         else if (tag === "reply") {
           root.actionStatus = "Reply sent"
-          // The reply went out; drop matching entries so the list only holds
-          // notifications still awaiting an answer.
-          var kept = []
-          var list = root.replyable || []
-          for (var i = 0; i < list.length; i++)
-            if (String(list[i].deviceId) !== String(devId)) kept.push(list[i])
-          root.replyable = kept
+          // The reply went out; drop just that card so other pending
+          // notifications stay answerable.
+          if (replyId !== "") root.removeReplyable(replyId)
+        }
+        else if (tag === "contacts-list") {
+          var parsed = Model.parseContactsJson(out)
+          root.contactsBusy = false
+          root.contactsLoaded = true
+          if (parsed.ok) {
+            root.contacts = parsed.contacts
+            root.contactsEmptyHint = !!parsed.empty
+            root.actionStatus = parsed.contacts.length > 0
+              ? String(parsed.contacts.length) + " contacts"
+              : "No contacts cached — Sync first"
+          } else {
+            root.lastError = parsed.error
+          }
+        }
+        else if (tag === "contacts-sync") {
+          root.actionStatus = "Contacts sync requested — list refreshes automatically"
+          if (root.primaryDevice) root.contactsList(root.primaryDevice.id)
         }
         root.refreshDevices()
       } else {
@@ -583,6 +664,15 @@ Item {
         // bin/omaconnect-exec): backend output exceeded safety limits.
         if (code === 3) root.lastError = "Backend output exceeded safety limits — action dropped"
         else if (!root.lastError) root.lastError = "Action failed (exit " + code + ")"
+        if (tag === "contacts-list") {
+          root.contactsBusy = false
+          // Pre-1.18 daemons have no `contacts` subcommand: surface the
+          // hint once; the panel keeps manual number entry.
+          if (String(root.lastError).toLowerCase().indexOf("unknown") >= 0
+              || String(root._actionOutput || "").toLowerCase().indexOf("unknown") >= 0) {
+            root.lastError = "Contacts need kcd 1.18 or newer"
+          }
+        }
         if (tag === "pair") {
           var next = {}
           for (var k in root.pendingPairs)

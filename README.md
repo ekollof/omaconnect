@@ -12,7 +12,7 @@ in QML.
 ## Prerequisites
 
 ```bash
-yay -S kcd-bin        # daemon (>= 1.17.0) + systemd user unit + firewall rules
+yay -S kcd-bin        # daemon (>= 1.17.0; contacts need >= 1.18.0) + systemd user unit + firewall rules
 ```
 
 Runtime needs are covered by any Omarchy install: `bash`, `coreutils`,
@@ -75,6 +75,8 @@ rm -rf ~/.config/kcd ~/.config/systemd/user/kcd.service.d
 - **Bar pill**: phone glyph + battery % with charging indicator.
 - **Notification replies**: replyable phone notifications (WhatsApp, SMS,
   …) appear in the panel's reply section; answers go out via `kcd reply`.
+  Each card has **Send** + **Dismiss**, plus a **Clear** all button —
+  dismissing only clears the desktop offer, the phone keeps its copy.
   Display itself needs no plugin code — kcd forwards through `notify-send`,
   so toasts land in Omarchy's notification history/DND like any other app.
 - **Share**: send a file to the primary device; incoming files/links/text
@@ -84,6 +86,11 @@ rm -rf ~/.config/kcd ~/.config/systemd/user/kcd.service.d
   unmount. Needs `sshfs` (optdepend of `kcd-bin`).
 - **SMS**: compose by number, incoming messages appear in the panel and as
   toasts. I won't send a test SMS for you — that one's yours to try.
+- **Contacts (kcd ≥ 1.18)**: phone address book via `kcd contacts sync/list`
+  with search; tapping a number fills the SMS composer. Sync progress
+  arrives as `contacts.updated` events and refreshes the list automatically.
+  Older daemons keep the manual number-entry behaviour (SMS shows a
+  "needs kcd 1.18+" hint, no contacts section).
 - **Phone media (MPRIS)**: now-playing title/artist with play/pause toggle,
   previous/next. Shows "No media playing" when the phone is quiet.
 - **Clipboard push**: per-device "Clip" button sends the desktop clipboard

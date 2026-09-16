@@ -190,6 +190,78 @@ function parseMountPoint(output) {
   return m ? m[1] : ""
 }
 
+// --- version gate (kcd >= 1.18 has `contacts list --json`) ---
+// Status reports versions like "1.18.0", "v1.18.0", or "dev" for local
+// builds. Unknown/dev shapes fail closed (false) so the panel keeps the
+// pre-1.18 manual-number behaviour instead of probing a missing subcommand.
+function parseVersion(raw) {
+  var m = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(raw || ""))
+  if (!m) return null
+  return {
+    major: parseInt(m[1], 10),
+    minor: parseInt(m[2], 10),
+    patch: m[3] !== undefined ? parseInt(m[3], 10) : 0
+  }
+}
+
+function versionAtLeast(raw, major, minor) {
+  var v = parseVersion(raw)
+  if (!v) return false
+  if (v.major !== major) return v.major > major
+  return v.minor >= minor
+}
+
+function supportsContacts(raw) {
+  return versionAtLeast(raw, 1, 18)
+}
+
+// --- contacts (`kcd contacts list <id> --json`) ---
+// Shape per ContactSummary: {uid, name, phones[], emails[], timestamp}.
+// Empty stdout with the "No cached contacts" hint means zero contacts, not
+// an error. Anything unparseable is an error so the panel can show it.
+// Capped at 2000 entries; field widths bound retained strings.
+function parseContactsJson(raw) {
+  var text = String(raw || "").trim()
+  if (text === "") return { ok: true, contacts: [] }
+  if (text.indexOf("No cached contacts") === 0) return { ok: true, contacts: [], empty: true }
+  var r = safeParseJson(raw, 64)
+  if (r.empty) return { ok: true, contacts: [] }
+  if (r.malformed) return { ok: false, error: "contacts: invalid JSON", contacts: [] }
+  var parsed = r.value
+  if (!parsed || typeof parsed.length !== "number") return { ok: false, error: "contacts: unexpected shape", contacts: [] }
+  var contacts = []
+  var n = Math.min(parsed.length, 2000)
+  for (var i = 0; i < n; i++) {
+    var c = parsed[i] || {}
+    var name = str(c, "name", "", 100).trim()
+    var uid = str(c, "uid", "", 128)
+    var phones = []
+    var rawPhones = c.phones
+    if (rawPhones && typeof rawPhones.length === "number") {
+      for (var p = 0; p < rawPhones.length && phones.length < 10; p++) {
+        var ph = String(rawPhones[p] || "").trim().slice(0, 64)
+        if (ph !== "") phones.push(ph)
+      }
+    }
+    var emails = []
+    var rawEmails = c.emails
+    if (rawEmails && typeof rawEmails.length === "number") {
+      for (var e = 0; e < rawEmails.length && emails.length < 10; e++) {
+        var em = String(rawEmails[e] || "").trim().slice(0, 128)
+        if (em !== "") emails.push(em)
+      }
+    }
+    if (name === "" && phones.length === 0) continue
+    contacts.push({
+      uid: uid,
+      name: name !== "" ? name : (phones.length > 0 ? phones[0] : "Unknown"),
+      phones: phones,
+      emails: emails
+    })
+  }
+  return { ok: true, contacts: contacts }
+}
+
 // --- battery pill ---
 function batteryIcon(charge, charging) {
   if (charging === true) return "󰂄"
