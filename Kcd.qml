@@ -297,8 +297,10 @@ Item {
     _pendingReplyId = ""
     _actionOutput = ""
     lastError = ""
+    // Flag BEFORE the positional: urfave/cli stops flag parsing at the
+    // first positional, so `list <id> --json` yields the plain table.
     actionProc.command = [root.helperBin, "run", String(root.runCap), "--",
-      "kcd", "contacts", "list", String(id), "--json"]
+      "kcd", "contacts", "list", "--json", String(id)]
     actionProc.running = true
   }
 
