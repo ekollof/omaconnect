@@ -52,6 +52,87 @@ function safeParseJson(raw, limit) {
 function isDeviceId(id) {
   return /^[A-Za-z0-9_-]{32,38}$/.test(String(id || ""))
 }
+
+// --- vCard 2.1 quoted-printable ---
+// Phones emit non-ASCII display names QP-encoded ("=44=61=76=C3=AD=64" =
+// "Davíd", UTF-8 bytes as =XX pairs) and naive parsers store them verbatim
+// (upstream kcd#38). Decode: split on '=', every group between '='s must be
+// exactly two hex digits, else bail untouched (a literal "a=b" name must
+// never be mangled). Byte-wise UTF-8 decode, no TextDecoder in QML's ES5.
+function _qpHexToByte(s) {
+  var v = parseInt(s, 16)
+  return (s.length === 2 && /^[0-9a-fA-F]{2}$/.test(s) && isFinite(v)) ? v : -1
+}
+
+function _utf8Decode(bytes) {
+  var out = ""
+  var i = 0
+  while (i < bytes.length) {
+    var b = bytes[i]
+    var cp
+    if (b < 0x80) {
+      cp = b
+      i += 1
+    } else if (b >= 0xC2 && b <= 0xDF && i + 1 < bytes.length) {
+      cp = ((b & 0x1F) << 6) | (bytes[i + 1] & 0x3F)
+      i += 2
+    } else if (b >= 0xE0 && b <= 0xEF && i + 2 < bytes.length) {
+      cp = ((b & 0x0F) << 12) | ((bytes[i + 1] & 0x3F) << 6) | (bytes[i + 2] & 0x3F)
+      i += 3
+    } else if (b >= 0xF0 && b <= 0xF4 && i + 3 < bytes.length) {
+      cp = ((b & 0x07) << 18) | ((bytes[i + 1] & 0x3F) << 12) | ((bytes[i + 2] & 0x3F) << 6) | (bytes[i + 3] & 0x3F)
+      i += 4
+    } else {
+      // Invalid sequence: drop one byte, never mis-sync the stream.
+      i += 1
+      continue
+    }
+    if (cp > 0xFFFF) {
+      cp -= 0x10000
+      out += String.fromCharCode(0xD800 + (cp >> 10), 0xDC00 + (cp & 0x3FF))
+    } else if (cp === 0) {
+      out += String.fromCharCode(0xFFFD)
+    } else {
+      out += String.fromCharCode(cp)
+    }
+  }
+  return out
+}
+
+function decodeQuotedPrintable(s) {
+  var text = String(s || "")
+  var first = text.indexOf("=")
+  if (first < 0) return text
+  var bytes = []
+  // Literal prefix before the first =XX group: tolerated, kept verbatim.
+  for (var p = 0; p < first; p++) bytes.push(text.charCodeAt(p) & 0xFF)
+  var i = first
+  var pairs = 0
+  while (i < text.length) {
+    if (text.charAt(i) !== "=") {
+      // Non '=' text inside a QP run is literal (rare in FN, legal in RFC).
+      bytes.push(text.charCodeAt(i) & 0xFF)
+      i += 1
+      continue
+    }
+    var v = _qpHexToByte(text.substr(i + 1, 2))
+    if (v < 0) {
+      // Invalid token: a pure QP run ended mid-group (kcd truncates QP names
+      // at 256 bytes, upstream kcd#38). With enough preceding pairs the run
+      // was clearly QP — decode the valid prefix and drop the mangled tail.
+      // A stray '=' in a plain name (under 3 pairs) keeps the original.
+      return pairs >= 3 ? _utf8Decode(bytes) : text
+    }
+    bytes.push(v)
+    pairs += 1
+    i += 3
+  }
+  // Full run: one pair could be a literal ("A=B2"), two real QP groups
+  // ("=C3=A9" → é) are unambiguous enough to decode.
+  if (pairs < 2) return text
+  var decoded = _utf8Decode(bytes)
+  return decoded === "" ? text : decoded
+}
 function parseDevicesJson(raw) {
   var r = safeParseJson(raw, 64)
   if (r.empty) return { ok: true, devices: [] }
@@ -243,7 +324,9 @@ function parseContactsJson(raw) {
   var n = Math.min(parsed.length, 2000)
   for (var i = 0; i < n; i++) {
     var c = parsed[i] || {}
-    var name = str(c, "name", "", 100).trim()
+    // Decode BEFORE clipping: quoted-printable names are ~3x longer, and a
+    // pre-decode slice would cut mid-=pair and ruin the UTF-8 decode.
+    var name = decodeQuotedPrintable(str(c, "name", "", 512)).trim().slice(0, 100)
     var uid = str(c, "uid", "", 128)
     var phones = []
     var rawPhones = c.phones
