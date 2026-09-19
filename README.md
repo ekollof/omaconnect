@@ -94,7 +94,9 @@ rm -rf ~/.config/kcd ~/.config/systemd/user/kcd.service.d
   `contacts` subcommand itself, not the daemon version string — release
   builds before 1.19.0 report `version: "dev"` in `status --json`.
   Note: `kcd contacts list --json` requires the flag *before* the device
-  id (urfave/cli stops flag parsing at the first positional).
+  id (urfave/cli stops flag parsing at the first positional). Names
+  arriving quoted-printable–encoded (vCard 2.1, upstream kcd#38) are
+  decoded client-side; kcd ≥ 1.19.1 will handle this natively once fixed.
 - **Phone media (MPRIS)**: now-playing title/artist with play/pause toggle,
   previous/next. Shows "No media playing" when the phone is quiet.
 - **Clipboard push**: per-device "Clip" button sends the desktop clipboard
