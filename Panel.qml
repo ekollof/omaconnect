@@ -25,12 +25,16 @@ Panel {
     settings: root.settings
   }
 
-  // Bar pill: phone glyph + primary battery, dimmed when nothing is connected.
+  // Bar pill: compact device glyph by default to keep bar spacing stable.
+  // Opt in to battery text via showPillBattery. Full battery detail stays
+  // in the panel device list.
   readonly property string pillText: {
     if (kcd.daemonState === "checking") return "󰄜 …"
     if (kcd.daemonState !== "up") return "󰄜"
     var dev = kcd.primaryDevice
     if (!dev) return "󰄜"
+    var showBattery = root.settings && root.settings.showPillBattery === true
+    if (!showBattery) return Model.typeIcon(dev.type)
     var bat = kcd.primaryBattery
     if (!bat) return Model.typeIcon(dev.type)
     return Model.batteryIcon(bat.charge, bat.charging) + " " + Math.round(Number(bat.charge) || 0) + "%"

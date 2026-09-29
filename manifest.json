@@ -30,6 +30,12 @@
         "max": 3600,
         "step": 5,
         "defaultValue": 30
+      },
+      {
+        "key": "showPillBattery",
+        "type": "boolean",
+        "label": "Show battery in bar pill (off = compact device glyph)",
+        "defaultValue": false
       }
     ]
   }
