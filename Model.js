@@ -156,17 +156,34 @@ function parseDevicesJson(raw) {
   return { ok: true, devices: devices }
 }
 
-function isPaired(device) {  return !!device && String(device.state || "").toLowerCase() === "paired"
+function pairingState(device) {
+  return device ? String(device.state || "").toLowerCase().replace(/_/g, "") : ""
+}
+
+function isPaired(device) {  return pairingState(device) === "paired"
 }
 
 function pairRequestedByPeer(device) {
-  return !!device && String(device.state || "").toLowerCase() === "pairrequestedbypeer"
+  return pairingState(device) === "pairrequestedbypeer"
+}
+
+// kcd 1.22's media status command sends requests to every connected device.
+// Android cancels pairing on receipt of a non-pair packet while unpaired.
+function canPollMpris(devices) {
+  var hasPaired = false
+  for (var i = 0; i < (devices || []).length; i++) {
+    var dev = devices[i]
+    if (!dev || !dev.connected) continue
+    if (!isPaired(dev)) return false
+    hasPaired = true
+  }
+  return hasPaired
 }
 
 function stateLabel(device) {
   if (!device) return "Unknown"
   if (device.connected !== true) return "Offline"
-  var s = String(device.state || "UNKNOWN").toLowerCase()
+  var s = pairingState(device)
   if (s === "paired") return "Paired"
   if (s === "pairrequested") return "Pair requested…"
   if (s === "pairrequestedbypeer") return "Wants to pair"

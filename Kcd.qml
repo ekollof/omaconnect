@@ -168,11 +168,14 @@ Item {
   function refreshDevices() {
     if (daemonState !== "up" || devicesProc.running) return
     devicesProc.running = true
-    refreshMpris()
   }
 
   function refreshMpris() {
     if (daemonState !== "up" || mprisProc.running) return
+    if (!Model.canPollMpris(devices)) {
+      nowPlaying = null
+      return
+    }
     mprisProc.running = true
   }
 
@@ -199,8 +202,13 @@ Item {
   }
 
   function pairDevice(id) {
-    pendingPairs = Object.assign({}, pendingPairs, { [String(id)]: true })
-    runAction("pair", id, ["pair", String(id)])
+    if (actionProc.running) {
+      lastError = "Another action is still running"
+      return
+    }
+    var accepting = Model.pairRequestedByPeer(deviceById(id))
+    if (!accepting) pendingPairs = Object.assign({}, pendingPairs, { [String(id)]: true })
+    runAction(accepting ? "pair-accept" : "pair", id, ["pair", String(id)])
   }
 
   function unpairDevice(id) {
@@ -551,6 +559,7 @@ Item {
         if (parsed.ok) {
           root.devices = parsed.devices
           root.lastError = ""
+          root.refreshMpris()
         } else {
           root.lastError = parsed.error
         }
@@ -565,7 +574,7 @@ Item {
       // lifetime (manual Refresh re-lists). Guarded by contactsProbed so an
       // empty address book can't loop via refreshDevices.
       if (!root.contactsUnsupported && !root.contactsProbed && !actionProc.running && !root.contactsBusy
-          && root.primaryDevice) {
+          && root.primaryDevice && Model.isPaired(root.primaryDevice) && root.primaryDevice.connected) {
         root.contactsList(root.primaryDevice.id)
       }
     }
@@ -633,6 +642,7 @@ Item {
         root.lastError = ""
         var out = String(root._actionOutput || "").trim()
         if (tag === "pair") root.actionStatus = "Pair request sent — accept on " + root.deviceName(devId)
+        else if (tag === "pair-accept") root.actionStatus = "Pairing accepted for " + root.deviceName(devId)
         else if (tag === "unpair") root.actionStatus = "Unpaired " + root.deviceName(devId)
         else if (tag === "ping") root.actionStatus = "Ping sent"
         else if (tag === "findmyphone") root.actionStatus = "Phone is ringing"
