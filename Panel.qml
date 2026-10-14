@@ -381,8 +381,9 @@ Panel {
               Row {
                 width: parent.width
                 spacing: Style.space(8)
-                TextField {
+                GuardedTextField {
                   id: replyField
+                  onPasteErrorChanged: if (pasteError) kcd.lastError = pasteError
                   width: parent.width - 152
                   foreground: root.bar.foreground
                   font.family: root.bar.fontFamily
@@ -617,7 +618,8 @@ Panel {
             }
           }
 
-          TextField {
+          GuardedTextField {
+            onPasteErrorChanged: if (pasteError) kcd.lastError = pasteError
             width: parent.width
             foreground: root.bar.foreground
             font.family: root.bar.fontFamily
@@ -682,7 +684,8 @@ Panel {
           expanded: root.smsExpanded
           onToggled: root.smsExpanded = !root.smsExpanded
 
-          TextField {
+          GuardedTextField {
+            onPasteErrorChanged: if (pasteError) kcd.lastError = pasteError
             width: parent.width
             foreground: root.bar.foreground
             font.family: root.bar.fontFamily
@@ -703,7 +706,8 @@ Panel {
           Row {
             width: parent.width
             spacing: Style.space(8)
-            TextField {
+            GuardedTextField {
+              onPasteErrorChanged: if (pasteError) kcd.lastError = pasteError
               width: parent.width - 84
               foreground: root.bar.foreground
               font.family: root.bar.fontFamily

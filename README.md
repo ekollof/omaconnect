@@ -101,6 +101,12 @@ rm -rf ~/.config/kcd ~/.config/systemd/user/kcd.service.d
   previous/next. Shows "No media playing" when the phone is quiet.
 - **Clipboard push**: per-device "Clip" button sends the desktop clipboard
   to the phone (daemon handles sync; needs `wl-clipboard`).
+- **Text entry**: contact search, SMS, and notification replies guard against
+  automatic native Qt clipboard reads. Ctrl+V/Shift+Insert explicitly paste
+  plain text through `wl-paste`, limited to 16 KiB and a two-second timeout.
+  Middle-click paste is disabled. These guarded fields support direct keyboard
+  entry, selection, copy/cut, and undo/redo; native input-method composition
+  is unavailable while the underlying Qt control remains read-only.
 
 ## IPC
 
