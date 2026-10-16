@@ -16,7 +16,7 @@ yay -S kcd-bin        # daemon (> 1.17.0; contacts need > 1.19.0) + systemd user
 ```
 
 Runtime needs are covered by any Omarchy install: `bash`, `coreutils`,
-`python3` (framing layer), `libnotify`, plus the optionals below.
+`python3` (framing layer), `libnotify`, plus the optionals below. SMS watch events update the panel only; kcd owns SMS notifications and applies its notification preferences and filters. OMAConnect does not send SMS bodies, sender numbers or attachment names to a notification process.
 
 Recommended optional deps (all present in `kcd-bin`'s optdepends):
 

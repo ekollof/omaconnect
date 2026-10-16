@@ -459,11 +459,13 @@ Item {
       }
       var threads = ([sms]).concat(smsList || [])
       smsList = threads.slice(0, smsLimit)
-      notify("SMS from " + sms.sender, sms.body.slice(0, 120))
+      // Watch events also contain historical/outgoing messages. Only kcd can
+      // apply NotifyIncoming and its notification filters; never re-notify
+      // these events or expose message text through process arguments.
       break
     }
     case "sms.attachment":
-      notify("MMS attachment", Model.str(payload, "filename", "saved", 500))
+      // Attachment watch events are not an authorization to notify either.
       break
     case "mpris.update":
       refreshMpris()
