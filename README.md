@@ -74,7 +74,7 @@ rm -rf ~/.config/kcd ~/.config/systemd/user/kcd.service.d
   optimistic "Pair requested…" state.
 - **Bar pill**: phone glyph + battery % with charging indicator.
 - **Notification replies**: replyable phone notifications (WhatsApp, SMS,
-  …) appear in the panel's reply section; answers go out via `kcd reply`.
+  …) appear in the panel's reply section; answers go directly to kcd's protected Unix socket. SMS recipients and message/reply text travel over the helper's stdin and the socket, never process arguments, environment variables or temporary files. Private actions have a 64 KiB input/response limit and a five-second deadline; socket access requires current-user ownership, private permissions and a matching peer UID. Backend failure details are suppressed because they may echo message content.
   Each card has **Send** + **Dismiss**, plus a **Clear** all button —
   dismissing only clears the desktop offer, the phone keeps its copy.
   Display itself needs no plugin code — kcd forwards through `notify-send`,
@@ -84,8 +84,7 @@ rm -rf ~/.config/kcd ~/.config/systemd/user/kcd.service.d
 - **Quick actions**: ping, find-my-phone (ring), call mute hint on incoming calls.
 - **Phone files (SFTP)**: list volumes, mount into the file manager,
   unmount. Needs `sshfs` (optdepend of `kcd-bin`).
-- **SMS**: compose by number, incoming messages appear in the panel and as
-  toasts. I won't send a test SMS for you — that one's yours to try.
+- **SMS**: compose by number; watch events update the panel, while kcd controls notification preferences and filters. No real SMS is sent by the tests.
 - **Contacts (kcd ≥ 1.18)**: phone address book via `kcd contacts sync/list`
   with search; tapping a number fills the SMS composer. Sync progress
   arrives as `contacts.updated` events and refreshes the list automatically.

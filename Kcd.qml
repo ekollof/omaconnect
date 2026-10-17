@@ -185,19 +185,23 @@ Item {
   property string _pendingDeviceId: ""
   property string _pendingReplyId: ""
   property string _actionOutput: ""
+  property string _actionInput: ""
 
-  function runAction(tag, deviceId, args) {
+  function runAction(tag, deviceId, args, privateRequest) {
     if (actionProc.running) {
       lastError = "Another action is still running"
       return
     }
     _pendingAction = tag
     _pendingDeviceId = String(deviceId || "")
-    if (tag !== "reply") _pendingReplyId = ""
+    _pendingReplyId = tag === "reply" ? String(privateRequest.payload.replyId) : ""
     _actionOutput = ""
     lastError = ""
     actionStatus = ""
-    actionProc.command = [root.helperBin, "run", String(root.runCap), "--", "kcd"].concat(args)
+    _actionInput = privateRequest ? JSON.stringify(privateRequest) : ""
+    actionProc.command = privateRequest
+      ? [root.helperBin, "private"]
+      : [root.helperBin, "run", String(root.runCap), "--", "kcd"].concat(args)
     actionProc.running = true
   }
 
@@ -257,7 +261,7 @@ Item {
       lastError = "Enter a number and a message"
       return
     }
-    runAction("sms-send", id, ["sms", "send", String(id), to, msg])
+    runAction("sms-send", id, [], { cmd: "send_sms", payload: { deviceId: String(id), phoneNumber: to, message: msg } })
   }
 
   function smsRefresh(id) {
@@ -280,8 +284,7 @@ Item {
       lastError = "Reply is empty"
       return
     }
-    _pendingReplyId = String(replyId || "")
-    runAction("reply", deviceId, ["reply", String(deviceId), String(replyId), msg])
+    runAction("reply", deviceId, [], { cmd: "notify_reply", payload: { deviceId: String(deviceId), replyId: String(replyId || ""), message: msg } })
   }
 
   function contactsSync(id) {
@@ -622,6 +625,11 @@ Item {
   Process {
     id: actionProc
     running: false
+    stdinEnabled: true
+    onStarted: {
+      if (root._actionInput !== "") write(root._actionInput + "\n")
+      root._actionInput = ""
+    }
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root._actionOutput = text
@@ -640,6 +648,7 @@ Item {
       root._pendingAction = ""
       root._pendingDeviceId = ""
       root._pendingReplyId = ""
+      root._actionInput = ""
       if (code === 0) {
         root.lastError = ""
         var out = String(root._actionOutput || "").trim()

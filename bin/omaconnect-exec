@@ -14,6 +14,8 @@ exhaust the shared shell process before Model.js ever parses a byte.
         directory allowlist and replace this process with it (no framing,
         no return). For fire-and-forget invocations that still need trusted
         resolution and a controlled environment.
+    omaconnect-exec private    one bounded JSON request on stdin, sent
+        directly to kcd's private Unix socket; no producer is spawned.
 
 Exit codes: the producer's code on success; 3 on any limit breach; 124 on
 producer timeout (run mode, 120s); 2 on misuse.
@@ -29,16 +31,105 @@ Design (all data paths are anonymous):
   input is measured exactly and split points never alter data.
 """
 import os
+import json
 import selectors
 import signal
+import socket
 import stat
+import struct
 import subprocess
 import sys
 import time
+import tomllib
 RUN_TIMEOUT_SECS = 120
 WATCH_MAX_CONSECUTIVE_DROPS = 100
 WATCH_LIVENESS_SECS = 5.0
 CHUNK = 65536
+PRIVATE_CAP = 65536
+PRIVATE_TIMEOUT = 5
+
+
+def private_mode():
+    """Read one bounded stdin record and call kcd without a child or argv data."""
+    deadline = time.monotonic() + PRIVATE_TIMEOUT
+
+    def remaining():
+        value = deadline - time.monotonic()
+        if value <= 0:
+            raise TimeoutError()
+        return value
+
+    try:
+        record = bytearray()
+        with selectors.DefaultSelector() as selector:
+            selector.register(sys.stdin.fileno(), selectors.EVENT_READ)
+            while b"\n" not in record:
+                if not selector.select(remaining()):
+                    raise TimeoutError()
+                chunk = os.read(sys.stdin.fileno(), min(4096, PRIVATE_CAP + 1 - len(record)))
+                if not chunk:
+                    raise ValueError()
+                record.extend(chunk)
+                if len(record) > PRIVATE_CAP:
+                    raise ValueError()
+        request = json.loads(record)
+        if not isinstance(request, dict) or set(request) != {"cmd", "payload"}:
+            raise ValueError()
+        fields = {"send_sms": {"deviceId", "phoneNumber", "message"},
+                  "notify_reply": {"deviceId", "replyId", "message"}}.get(request["cmd"])
+        payload = request["payload"]
+        if not fields or not isinstance(payload, dict) or set(payload) != fields:
+            raise ValueError()
+        if any(not isinstance(value, str) or not value or "\0" in value for value in payload.values()):
+            raise ValueError()
+        runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+        path = os.path.join(runtime, "kcd", "kcd.sock")
+        config_home = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+        try:
+            config_fd = os.open(os.path.join(config_home, "kcd", "kcd.toml"), os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+            with os.fdopen(config_fd, "rb") as config:
+                if not stat.S_ISREG(os.fstat(config.fileno()).st_mode):
+                    raise ValueError()
+                data = config.read(PRIVATE_CAP + 1)
+            if len(data) > PRIVATE_CAP:
+                raise ValueError()
+            path = tomllib.loads(data.decode()).get("socket_path", path)
+        except FileNotFoundError:
+            pass
+        if not isinstance(path, str) or not path:
+            raise ValueError()
+        metadata = os.stat(path)
+        if not stat.S_ISSOCK(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
+            raise ValueError()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(remaining())
+            connection.connect(path)
+            _, uid, _ = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            if uid != os.getuid():
+                raise ValueError()
+            connection.settimeout(remaining())
+            connection.sendall(json.dumps(request, ensure_ascii=True).encode() + b"\n")
+            response = bytearray()
+            while b"\n" not in response:
+                connection.settimeout(remaining())
+                chunk = connection.recv(min(4096, PRIVATE_CAP + 1 - len(response)))
+                if not chunk:
+                    raise ValueError()
+                response.extend(chunk)
+                if len(response) > PRIVATE_CAP:
+                    raise ValueError()
+        result = json.loads(response)
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            # Backend errors may contain the rejected private payload.
+            raise ValueError()
+        print("Private action completed")
+        return 0
+    except TimeoutError:
+        sys.stderr.write("omaconnect-exec: private action timed out\n")
+        return 124
+    except (OSError, ValueError, TypeError, KeyError, _Terminate):
+        sys.stderr.write("omaconnect-exec: private action failed\n")
+        return 3
 
 # Executables may only come from these directories, must be root-owned
 # regular files, and must not be group/world-writable. Ambient PATH is never
@@ -421,6 +512,9 @@ def watch_mode(cap, cmd):
 
 
 def main(argv):
+    if argv == ["private"]:
+        install_handlers()
+        return private_mode()
     if len(argv) < 3:
         return usage()
     if argv[0] == "exec":
