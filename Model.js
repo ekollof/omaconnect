@@ -167,6 +167,12 @@ function pairRequestedByPeer(device) {
   return pairingState(device) === "pairrequestedbypeer"
 }
 
+// Reply IDs are phone-supplied and may collide across devices. Namespace the
+// draft key by device so one phone's draft can never be sent to another.
+function replyDraftKey(deviceId, replyId) {
+  return JSON.stringify([String(deviceId || ""), String(replyId || "")])
+}
+
 // kcd 1.22's media status command sends requests to every connected device.
 // Android cancels pairing on receipt of a non-pair packet while unpaired.
 function canPollMpris(devices) {

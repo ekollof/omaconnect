@@ -419,7 +419,7 @@ Item {
     }
     case "notification.canceled":
       // Phone dismissed it — nothing to keep offering a reply for.
-      removeReplyable(Model.str(payload, "id", "", 128))
+      removeReplyable(event.deviceId, Model.str(payload, "id", "", 128))
       break
     case "contacts.updated":
       // Sync round made progress; the vCards phase means the cache changed.
@@ -478,19 +478,19 @@ Item {
     }
   }
 
-  function removeReplyable(replyId) {
+  function removeReplyable(deviceId, replyId) {
     if (!replyId) return
     var kept = []
     var list = replyable || []
     for (var i = 0; i < list.length; i++)
-      if (String(list[i].replyId) !== String(replyId)) kept.push(list[i])
+      if (String(list[i].replyId) !== String(replyId) || String(list[i].deviceId) !== String(deviceId)) kept.push(list[i])
     replyable = kept
   }
 
   // User-dismissed: drop one reply card, or the whole list. The phone keeps
   // its own copy; this only clears the desktop offer to reply.
-  function dismissReply(replyId) {
-    removeReplyable(replyId)
+  function dismissReply(deviceId, replyId) {
+    removeReplyable(deviceId, replyId)
   }
 
   function clearReplies() {
@@ -681,7 +681,7 @@ Item {
           root.actionStatus = "Reply sent"
           // The reply went out; drop just that card so other pending
           // notifications stay answerable.
-          if (replyId !== "") root.removeReplyable(replyId)
+          if (replyId !== "") root.removeReplyable(devId, replyId)
         }
         else if (tag === "contacts-list") {
           var parsed = Model.parseContactsJson(out)

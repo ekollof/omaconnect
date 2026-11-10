@@ -62,26 +62,26 @@ Panel {
 
   // Drafts are keyed by phone-supplied reply IDs; the "r:" prefix keeps a
   // crafted id (e.g. "__proto__") from touching Object.prototype.
-  function draftKey(replyId) {
-    return "r:" + String(replyId || "")
+  function draftKey(deviceId, replyId) {
+    return Model.replyDraftKey(deviceId, replyId)
   }
 
-  function setReplyDraft(replyId, text) {
+  function setReplyDraft(deviceId, replyId, text) {
     var next = Object.assign({}, replyDrafts)
-    next[draftKey(replyId)] = text
+    next[draftKey(deviceId, replyId)] = text
     replyDrafts = next
   }
 
   function sendReply(entry) {
     if (!entry) return
-    kcd.replyTo(entry.deviceId, entry.replyId, replyDrafts[draftKey(entry.replyId)] || "")
-    setReplyDraft(entry.replyId, "")
+    kcd.replyTo(entry.deviceId, entry.replyId, replyDrafts[draftKey(entry.deviceId, entry.replyId)] || "")
+    setReplyDraft(entry.deviceId, entry.replyId, "")
   }
 
   function dismissReply(entry) {
     if (!entry) return
-    setReplyDraft(entry.replyId, "")
-    kcd.dismissReply(entry.replyId)
+    setReplyDraft(entry.deviceId, entry.replyId, "")
+    kcd.dismissReply(entry.deviceId, entry.replyId)
   }
 
   function clearAllReplies() {
@@ -388,8 +388,8 @@ Panel {
                   foreground: root.bar.foreground
                   font.family: root.bar.fontFamily
                   placeholderText: "Reply…"
-                  text: root.replyDrafts[root.draftKey(entry.replyId)] || ""
-                  onTextChanged: root.setReplyDraft(entry.replyId, text)
+                  text: root.replyDrafts[root.draftKey(entry.deviceId, entry.replyId)] || ""
+                  onTextChanged: root.setReplyDraft(entry.deviceId, entry.replyId, text)
                   onAccepted: root.sendReply(entry)
                 }
                 Button {
