@@ -8,7 +8,7 @@ Panel {
   id: root
   moduleName: "ekollof.omaconnect"
   ipcTarget: "ekollof.omaconnect"
-  // Own the single IpcHandler this target permits, so refresh() is exposed
+  // Own the single ShellIpc target this panel permits, so refresh() is exposed
   // alongside the standard open/close/toggle lifecycle.
   manageIpc: false
 
@@ -107,7 +107,7 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  IpcHandler {
+  ShellIpc {
     target: "ekollof.omaconnect"
 
     function open() { root.open() }

@@ -1,6 +1,7 @@
 import QtQuick
 import qs.Ui
 import qs.Commons
+import qs.Commons as Commons
 
 // Collapsible panel section: separator, chevron header, content slot.
 // Expansion state lives with the caller (`expanded` + `onToggled`) so lazy
@@ -10,7 +11,7 @@ Column {
 
   property string title: ""
   property bool expanded: false
-  property color foreground: Color.foreground
+  property color foreground: Commons.Color.foreground
   property string fontFamily: Style.font.family
 
   signal toggled()
