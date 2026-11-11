@@ -15,7 +15,7 @@ FALLBACKS=("phone" "dialog-information")
 
 theme_has() {
   local name="$1"
-  find /usr/share/icons "$HOME/.local/share/icons" /usr/share/pixmaps -maxdepth 5 -name "$name.*" 2>/dev/null | grep -q .
+  /usr/bin/timeout 2 /usr/bin/find /usr/share/icons "$HOME/.local/share/icons" /usr/share/pixmaps -maxdepth 5 -name "$name.*" -print -quit 2>/dev/null | /usr/bin/grep -q .
 }
 
 resolve_icon() {

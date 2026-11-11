@@ -51,6 +51,9 @@ Item {
   property string actionStatus: ""
   property string lastError: ""
   property string doctorSummary: ""
+  property var notifyQueue: []
+  readonly property int notifyLimit: 8
+  property bool notifyRunning: false
 
   readonly property bool busy: statusProc.running || devicesProc.running || actionProc.running || doctorProc.running
   readonly property int refreshIntervalSec: {
@@ -318,9 +321,11 @@ Item {
   function enableDaemon() {
     // Explicit user gesture only — the plugin never enables the service itself.
     // Resolved through the helper like every other invocation (no ambient PATH).
+    if (daemonProc.running) return
     lastError = ""
     actionStatus = "Starting kcd…"
-    Quickshell.execDetached([helperBin, "exec", "--", "systemctl", "--user", "enable", "--now", "kcd"])
+    daemonProc.started = false
+    daemonProc.running = true
     enableWait.restart()
   }
 
@@ -354,14 +359,33 @@ Item {
   function notify(title, body) {
     var t = String(title || "OMAConnect")
     var b = String(body || "")
-    if (b === "") Quickshell.execDetached([helperBin, "exec", "--", "notify-send", t])
-    else Quickshell.execDetached([helperBin, "exec", "--", "notify-send", t, b])
+    var q = (notifyQueue || []).slice()
+    for (var i = 0; i < q.length; i++)
+      if (q[i].title === t && q[i].body === b) return
+    q.push({ title: t, body: b })
+    if (q.length > notifyLimit) q = q.slice(q.length - notifyLimit)
+    notifyQueue = q
+    root.startNotify()
+  }
+
+  function startNotify() {
+    if (root.notifyRunning) return
+    var q = (notifyQueue || []).slice()
+    if (q.length === 0) return
+    var item = q.shift()
+    notifyQueue = q
+    root.notifyRunning = true
+    notifyProc.started = false
+    var cmd = [helperBin, "exec", "--", "timeout", "-k", "1", "3", "notify-send", item.title]
+    if (item.body !== "") cmd.push(item.body)
+    notifyProc.command = cmd
+    notifyProc.running = true
   }
 
   function dismissToastBySummary(summary) {
     var needle = String(summary || "")
     if (needle === "") return
-    Quickshell.execDetached([helperBin, "exec", "--", "qs", "-c", "omarchy", "ipc", "call", "notifications", "dismiss", needle])
+    Quickshell.execDetached([helperBin, "exec", "--", "timeout", "-k", "1", "3", "qs", "-c", "omarchy", "ipc", "call", "notifications", "dismiss", needle])
   }
 
   // ---------- watch stream ----------
@@ -666,7 +690,7 @@ Item {
             root.actionStatus = "Mounted at " + mountPath
             // Open the mount in the default file manager (xdg-open resolves
             // to Nautilus/Thunar/… per the user's defaults).
-            Quickshell.execDetached([root.helperBin, "exec", "--", "xdg-open", mountPath])
+            Quickshell.execDetached([root.helperBin, "exec", "--", "timeout", "-k", "1", "3", "xdg-open", mountPath])
           } else {
             root.actionStatus = out !== "" ? out.slice(0, 300) : "Mounted"
           }
@@ -826,6 +850,41 @@ Item {
     repeat: false
     onTriggered: {
       root.actionStatus = ""
+    }
+  }
+
+  Process {
+    id: daemonProc
+    property bool started: false
+    command: [helperBin, "exec", "--", "timeout", "-k", "1", "10", "systemctl", "--user", "enable", "--now", "kcd"]
+    onStarted: started = true
+    onExited: function(code) {
+      if (code !== 0) {
+        root.lastError = "Could not start kcd"
+        root.actionStatus = ""
+      }
+    }
+    onRunningChanged: function() {
+      if (!daemonProc.running && !daemonProc.started) {
+        root.lastError = "Could not start kcd"
+        root.actionStatus = ""
+      }
+    }
+  }
+
+  Process {
+    id: notifyProc
+    property bool started: false
+    onStarted: started = true
+    onExited: function() {
+      root.notifyRunning = false
+      root.startNotify()
+    }
+    onRunningChanged: function() {
+      if (!notifyProc.running && !notifyProc.started && root.notifyRunning) {
+        root.notifyRunning = false
+        root.startNotify()
+      }
     }
   }
 
